@@ -19,6 +19,7 @@
     "tailwindcss": "^4.0.0",
     "@tailwindcss/postcss": "^4.0.0",
     "autoprefixer": "^10.4.0",
+    "ethers": "latest",
     "lucide-react": "^0.400.0"
   },
   "devDependencies": {
