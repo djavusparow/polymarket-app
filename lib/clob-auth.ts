@@ -34,7 +34,7 @@ export interface ClobCreds {
  * Secret must be base64-encoded (as returned by create_or_derive_api_creds).
  */
 export async function buildClobSignature(
-  base64Secret: string,
+  secret: string,
   timestamp: string,
   method: 'GET' | 'POST' | 'DELETE',
   path: string,
@@ -42,8 +42,24 @@ export async function buildClobSignature(
 ): Promise<string> {
   const message = `${timestamp}${method}${path}${body}`
 
-  // Decode base64 secret → raw bytes
-  const secretBytes = Uint8Array.from(atob(base64Secret), c => c.charCodeAt(0))
+  // Polymarket API secret may be base64-encoded OR raw string depending on account type.
+  // Try base64 decode first; if it fails or looks like plain text, use raw UTF-8 bytes.
+  let secretBytes: Uint8Array
+  try {
+    const decoded = atob(secret)
+    // Sanity check: valid base64 decode typically produces non-printable bytes
+    // If all chars are printable ASCII it might just be a plain string — use raw
+    const nonPrintable = decoded.split('').some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) > 126)
+    if (nonPrintable || decoded.length !== secret.length * 0.75) {
+      secretBytes = Uint8Array.from(decoded, c => c.charCodeAt(0))
+    } else {
+      // Looks like the decoded result is still plain text → use raw UTF-8
+      secretBytes = new TextEncoder().encode(secret)
+    }
+  } catch {
+    // atob failed → secret is not base64, use raw UTF-8
+    secretBytes = new TextEncoder().encode(secret)
+  }
 
   const key = await crypto.subtle.importKey(
     'raw',
