@@ -22,6 +22,8 @@ export interface ClobCreds {
   apiSecret: string
   apiPassphrase: string
   funderAddress: string
+  /** Private key hex for signing orders (0x...) */
+  privateKey?: string
   /** 0 = EOA (MetaMask), 1 = POLY_PROXY (Email/Magic). Default: 1 */
   signatureType?: 0 | 1 | 2
 }
@@ -88,11 +90,28 @@ export async function buildClobHeaders(
  * signatureType env var: POLYMARKET_SIGNATURE_TYPE (0 or 1, default 1)
  */
 export function resolveCredentials(fromClient?: Partial<ClobCreds>): ClobCreds | null {
-  const apiKey         = process.env.POLYMARKET_API_KEY
-  const apiSecret      = process.env.POLYMARKET_API_SECRET
-  const apiPassphrase  = process.env.POLYMARKET_API_PASSPHRASE
-  const funderAddress  = process.env.POLYMARKET_FUNDER_ADDRESS
-  const sigTypeEnv     = process.env.POLYMARKET_SIGNATURE_TYPE
+  // Support both naming conventions — user sets whichever they configured in Vercel
+  const apiKey = (
+    process.env.CLOB_API_KEY ??
+    process.env.POLYMARKET_API_KEY
+  )
+  const apiSecret = (
+    process.env.CLOB_API_SECRET ??
+    process.env.POLYMARKET_API_SECRET
+  )
+  const apiPassphrase = (
+    process.env.CLOB_API_PASSPHRASE ??
+    process.env.POLYMARKET_API_PASSPHRASE
+  )
+  const funderAddress = (
+    process.env.FUNDER_ADDRESS ??
+    process.env.POLYMARKET_FUNDER_ADDRESS
+  )
+  const privateKey = (
+    process.env.WALLET_PRIVATE_KEY ??
+    process.env.POLYMARKET_PRIVATE_KEY
+  )
+  const sigTypeEnv = process.env.POLYMARKET_SIGNATURE_TYPE
 
   if (apiKey && apiSecret && apiPassphrase && funderAddress) {
     return {
@@ -100,6 +119,7 @@ export function resolveCredentials(fromClient?: Partial<ClobCreds>): ClobCreds |
       apiSecret,
       apiPassphrase,
       funderAddress,
+      privateKey: privateKey ?? '',
       signatureType: sigTypeEnv === '0' ? 0 : 1,
     }
   }
