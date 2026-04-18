@@ -20,7 +20,7 @@
     "@tailwindcss/postcss": "^4.0.0",
     "autoprefixer": "^10.4.0",
     "lucide-react": "^0.400.0",
-    "node:crypto": "latest"
+    "crypto": "latest"
   },
   "devDependencies": {
     "typescript": "^5.0.0",

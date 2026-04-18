@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { sign as nodeSign, createPrivateKey } from 'node:crypto'
+import { sign as nodeSign, createPrivateKey } from 'crypto'
 import { buildClobHeaders, resolveCredentials } from '@/lib/clob-auth'
 import type { ClobCreds } from '@/lib/clob-auth'
 
