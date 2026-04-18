@@ -197,23 +197,21 @@ export default function MarketsPage() {
           ) : (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {filtered.map(market => {
-                // Look up the YES token's real-time price
                 const yesTokenId = market.clobTokenIds?.[0]
                 const rtPrice = yesTokenId ? realtimePrices[yesTokenId] : undefined
                 const realtimeYesPrice = rtPrice?.price ?? rtPrice?.bestBid
                 return (
-                <MarketCard
-                  key={market.id}
-                  market={market}
-                  signal={signals[market.id]}
-                  onAnalyze={analyzeMarket}
-                  analyzing={analyzingId === market.id}
-                  onExecute={handleExecute}
-                  realtimeYesPrice={realtimeYesPrice}
-                />
+                  <MarketCard
+                    key={market.id}
+                    market={market}
+                    signal={signals[market.id]}
+                    onAnalyze={analyzeMarket}
+                    analyzing={analyzingId === market.id}
+                    onExecute={handleExecute}
+                    realtimeYesPrice={realtimeYesPrice}
+                  />
                 )
-              }}
-              ))}
+              })}
               {filtered.length === 0 && (
                 <div className="col-span-full py-12 text-center text-muted-foreground">
                   No markets match your search
