@@ -1,11 +1,11 @@
 import type { PolymarketMarket, AIAnalysis, CombinedSignal, AIModel, SignalDirection } from './types'
 import { parseOutcomePrice } from './polymarket'
 
-// Vercel AI Gateway — zero config, no API key needed in v0/Vercel deployments
-const LLM_ENDPOINT = 'https://ai-gateway.vercel.sh/v1/chat/completions'
+const LLM_ENDPOINT = 'https://llm.blackbox.ai/chat/completions'
 const LLM_HEADERS: Record<string, string> = {
+  'customerId': 'cus_UIDAXBwD6XwhtQ',
   'Content-Type': 'application/json',
-  // AI Gateway uses the deployment's built-in auth — no extra key needed
+  'Authorization': 'Bearer xxx',
 }
 
 // ─── System Prompts per AI Role ───────────────────────────────────────────────
@@ -84,7 +84,7 @@ Respond ONLY with valid JSON in this exact format:
 async function callAI(
   systemPrompt: string,
   marketContext: string,
-  model = 'anthropic/claude-opus-4.6'
+  model = 'openrouter/claude-sonnet-4'
 ): Promise<Record<string, unknown> | null> {
   try {
     const res = await fetch(LLM_ENDPOINT, {
@@ -217,9 +217,9 @@ export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedS
   // All 3 calls use openrouter/claude-sonnet-4 via the unified endpoint.
   // Each is assigned a distinct role label so the UI shows which "analyst" produced it.
   const modelResults: Array<{ raw: Record<string, unknown> | null; model: AIModel }> = [
-    { raw: analystResult,   model: 'claude-opus' },  // Market Analyst role
-    { raw: riskResult,      model: 'claude-opus' },  // Risk Analyst role
-    { raw: sentimentResult, model: 'claude-opus' },  // Sentiment Analyst role
+    { raw: analystResult,   model: 'claude-sonnet' },  // Market Analyst role
+    { raw: riskResult,      model: 'claude-sonnet' },  // Risk Analyst role
+    { raw: sentimentResult, model: 'claude-sonnet' },  // Sentiment Analyst role
   ]
 
   const analyses: AIAnalysis[] = modelResults
