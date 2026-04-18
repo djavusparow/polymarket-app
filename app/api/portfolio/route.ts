@@ -42,6 +42,7 @@ export async function GET(request: Request) {
     const balPath = '/balance-allowance?asset_type=0'
     const balHeaders = await buildClobHeaders(creds, 'GET', balPath)
 
+    console.log('[api/portfolio] env check — CLOB_API_KEY:', !!process.env.CLOB_API_KEY, 'FUNDER_ADDRESS:', !!process.env.FUNDER_ADDRESS)
     console.log('[api/portfolio] funderAddress:', creds.funderAddress)
     console.log('[api/portfolio] calling CLOB:', `${CLOB_HOST}${balPath}`)
 
