@@ -37,10 +37,15 @@ export async function GET(request: Request) {
 
   try {
     // ── 1. USDC Balance from CLOB (L2 authenticated) ──────────────────────────
-    // Returns: { balance: "1234.56", allowance: "...", asset_type: "USDC" }
-    const balPath = '/balance-allowance?asset_type=USDC'
+    // Correct endpoint: asset_type=0 means USDC, asset_type=1 means conditional token
+    // Ref: https://docs.polymarket.com/developers/CLOB/rest-api/balances
+    const balPath = '/balance-allowance?asset_type=0'
     const balHeaders = await buildClobHeaders(creds, 'GET', balPath)
-    const [balRes, ordersRes] = await Promise.all([
+
+    console.log('[api/portfolio] funderAddress:', creds.funderAddress)
+    console.log('[api/portfolio] calling CLOB:', `${CLOB_HOST}${balPath}`)
+
+    const [balRes, ordersRes, posRes] = await Promise.all([
       fetch(`${CLOB_HOST}${balPath}`, { headers: balHeaders, cache: 'no-store' }),
       // ── 2. Open orders from CLOB (L2 authenticated) ───────────────────────
       (async () => {
@@ -48,37 +53,48 @@ export async function GET(request: Request) {
         const ordHeaders = await buildClobHeaders(creds, 'GET', ordPath)
         return fetch(`${CLOB_HOST}${ordPath}`, { headers: ordHeaders, cache: 'no-store' })
       })(),
+      // ── 3. Open Positions from Data API (public by wallet address) ────────
+      fetch(
+        `${DATA_HOST}/v2/positions?user=${encodeURIComponent(creds.funderAddress)}&sizeThreshold=.1`,
+        { cache: 'no-store' }
+      ),
     ])
-
-    // ── 3. Open Positions from Data API (public by wallet address) ────────────
-    // No auth required — publicly queryable by funder wallet address
-    const posRes = await fetch(
-      `${DATA_HOST}/v2/positions?user=${encodeURIComponent(creds.funderAddress)}&sizeThreshold=.1`,
-      { cache: 'no-store' }
-    )
 
     let balance = 0
     if (balRes.ok) {
       const balData = await balRes.json()
-      // balance-allowance returns USDC amount as decimal string (NOT in 1e6 units)
-      balance = parseFloat(balData?.balance ?? '0')
-      if (isNaN(balance)) balance = 0
+      console.log('[api/portfolio] raw balance response:', JSON.stringify(balData))
+      // CLOB returns balance as decimal string, e.g. "5.23" for $5.23
+      // Older versions may return in micro-USDC (1e6) units — handle both
+      const raw = parseFloat(
+        balData?.balance ?? balData?.USDC ?? balData?.asset ?? '0'
+      )
+      if (!isNaN(raw)) {
+        balance = raw >= 1_000 ? raw / 1_000_000 : raw
+      }
     } else {
       const errText = await balRes.text()
-      console.error('[api/portfolio] balance error:', balRes.status, errText)
+      console.log('[api/portfolio] balance HTTP error:', balRes.status, errText)
     }
 
     let positions: unknown[] = []
     if (posRes.ok) {
       const posData = await posRes.json()
       positions = Array.isArray(posData) ? posData : posData?.results ?? []
+      console.log('[api/portfolio] positions count:', positions.length)
+    } else {
+      console.log('[api/portfolio] positions error:', posRes.status, await posRes.text())
     }
 
     let orders: unknown[] = []
     if (ordersRes.ok) {
       const ordData = await ordersRes.json()
       orders = Array.isArray(ordData) ? ordData : ordData?.data ?? []
+    } else {
+      console.log('[api/portfolio] orders error:', ordersRes.status)
     }
+
+    console.log('[api/portfolio] final balance:', balance)
 
     return NextResponse.json({
       balance,
@@ -89,7 +105,7 @@ export async function GET(request: Request) {
 
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error'
-    console.error('[api/portfolio] error:', msg)
+    console.log('[api/portfolio] catch error:', msg)
     return NextResponse.json(
       { balance: 0, positions: [], orders: [], configured: true, error: `Portfolio fetch failed: ${msg}` },
       { status: 500 }
