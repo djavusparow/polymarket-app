@@ -62,6 +62,7 @@ export async function GET(request: Request) {
     ])
 
     let balance = 0
+    console.log('[api/portfolio] balance HTTP status:', balRes.status)
     if (balRes.ok) {
       const balData = await balRes.json()
       console.log('[api/portfolio] raw balance response:', JSON.stringify(balData))
