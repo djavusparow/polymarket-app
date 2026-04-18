@@ -40,8 +40,8 @@ export interface MarketPrice {
 // ─── AI Signal Types ─────────────────────────────────────────────────────────
 
 export type SignalDirection = 'BUY' | 'SELL' | 'HOLD'
-// All 3 AI roles run on claude-sonnet-4 via the unified endpoint
-export type AIModel = 'claude-sonnet' | 'ensemble'
+// AI model labels shown in the UI
+export type AIModel = 'claude-sonnet' | 'claude-opus' | 'ensemble'
 
 export interface AIAnalysis {
   model: AIModel
