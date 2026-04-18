@@ -238,10 +238,17 @@ export async function POST(request: Request) {
       }, { status: 401 })
     }
 
-    const privateKey = process.env.POLYMARKET_PRIVATE_KEY ?? clientCreds?.privateKey ?? ''
+    // Support both naming conventions matching Vercel env var setup
+    const privateKey = (
+      process.env.WALLET_PRIVATE_KEY ??
+      process.env.POLYMARKET_PRIVATE_KEY ??
+      creds.privateKey ??
+      clientCreds?.privateKey ??
+      ''
+    )
     if (!privateKey) {
       return NextResponse.json({
-        error: 'POLYMARKET_PRIVATE_KEY not set. Add it in Vercel Environment Variables.',
+        error: 'WALLET_PRIVATE_KEY not set. Add it in Vercel Environment Variables.',
         code: 'NO_PRIVATE_KEY',
       }, { status: 401 })
     }
