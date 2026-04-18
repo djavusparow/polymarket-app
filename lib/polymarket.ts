@@ -188,20 +188,29 @@ export function getYesNoTokenIds(market: PolymarketMarket): { yes: string; no: s
 
 /**
  * Correctly parse outcomePrices from Gamma API.
- * Gamma returns it as a JSON-encoded array string: '["0.52", "0.48"]'
+ * Gamma may return it as:
+ *   - string[] e.g. ["0.52", "0.48"]
+ *   - JSON-encoded array string e.g. '["0.52", "0.48"]'
+ *   - plain number string e.g. "0.52"
  * Returns the YES (index 0) probability as a number 0-1.
  */
-export function parseOutcomePrice(priceStr: string | undefined): number {
-  if (!priceStr) return 0.5
+export function parseOutcomePrice(price: string | string[] | undefined): number {
+  if (!price) return 0.5
+  // Already an array — take first element
+  if (Array.isArray(price)) {
+    return parseFloat(price[0]) || 0.5
+  }
+  // JSON-encoded array string
   try {
-    const parsed = JSON.parse(priceStr)
+    const parsed = JSON.parse(price)
     if (Array.isArray(parsed) && parsed.length > 0) {
       return parseFloat(parsed[0]) || 0.5
     }
   } catch {
-    // not JSON, try direct parse
+    // not JSON, fall through
   }
-  const n = parseFloat(priceStr)
+  // Plain number string
+  const n = parseFloat(price)
   return isNaN(n) ? 0.5 : n
 }
 

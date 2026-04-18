@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { BrainCircuit, Loader2, TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { PolymarketMarket, CombinedSignal } from '@/lib/types'
-import { formatVolume } from '@/lib/polymarket'
+import { formatVolume, parseOutcomePrice } from '@/lib/polymarket'
 
 interface MarketCardProps {
   market: PolymarketMarket
@@ -201,15 +201,4 @@ function SignalIcon({ direction, size = 'sm' }: { direction: string; size?: 'xs'
   if (direction === 'BUY') return <TrendingUp className={cn(cls, 'text-profit')} />
   if (direction === 'SELL') return <TrendingDown className={cn(cls, 'text-loss')} />
   return <Minus className={cn(cls, 'text-muted-foreground')} />
-}
-
-function parseOutcomePrice(priceStr: string | undefined): number {
-  if (!priceStr) return 0.5
-  try {
-    const parsed = JSON.parse(priceStr)
-    if (Array.isArray(parsed)) return parseFloat(parsed[0]) || 0.5
-    return parseFloat(priceStr) || 0.5
-  } catch {
-    return parseFloat(priceStr || '0.5') || 0.5
-  }
 }
