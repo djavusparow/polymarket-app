@@ -35,14 +35,22 @@ export default function PortfolioPage() {
       }
       const res = await fetch('/api/portfolio', { headers })
       const data = await res.json()
+      console.log('[v0] portfolio API response:', JSON.stringify(data))
       setConfigured(data.configured)
-      if (data.configured && data.balance > 0) {
-        setLiveBalance(data.balance)
+      if (data.configured) {
+        setLiveBalance(data.balance ?? 0)
       }
-    } catch {}
+    } catch (err) {
+      console.log('[v0] portfolio fetch error:', err)
+    }
   }
 
-  useEffect(() => { refresh() }, [])
+  useEffect(() => {
+    refresh()
+    // Auto-refresh every 15 seconds for live balance updates
+    const interval = setInterval(refresh, 15_000)
+    return () => clearInterval(interval)
+  }, [])
 
   const closePosition = (trade: Trade) => {
     updateTrade(trade.id, {
