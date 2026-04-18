@@ -85,7 +85,13 @@ export async function buildClobHeaders(
   body = ''
 ): Promise<Record<string, string>> {
   const timestamp = Math.floor(Date.now() / 1000).toString()
-  const signature = await buildClobSignature(creds.apiSecret, timestamp, method, path, body)
+
+  // Polymarket CLOB signing rule:
+  // The path used for HMAC signing must be ONLY the path component (no query string).
+  // e.g. "/balance-allowance?asset_type=0" → sign only "/balance-allowance"
+  const pathForSigning = path.split('?')[0]
+
+  const signature = await buildClobSignature(creds.apiSecret, timestamp, method, pathForSigning, body)
 
   return {
     'POLY_ADDRESS':     creds.funderAddress,
