@@ -41,7 +41,7 @@ export interface MarketPrice {
 
 export type SignalDirection = 'BUY' | 'SELL' | 'HOLD'
 // AI model labels shown in the UI
-export type AIModel = 'claude-sonnet' | 'claude-opus' | 'ensemble'
+export type AIModel = 'claude-sonnet' | 'ensemble'
 
 export interface AIAnalysis {
   model: AIModel
