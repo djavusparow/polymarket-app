@@ -1,0 +1,94 @@
+'use client'
+
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+import {
+  LayoutDashboard, TrendingUp, BrainCircuit, Settings, History, Wallet, Zap, Activity
+} from 'lucide-react'
+import { cn } from '@/lib/utils'
+
+const navItems = [
+  { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/markets', label: 'Markets', icon: TrendingUp },
+  { href: '/signals', label: 'AI Signals', icon: BrainCircuit },
+  { href: '/portfolio', label: 'Portfolio', icon: Wallet },
+  { href: '/history', label: 'Trade History', icon: History },
+  { href: '/settings', label: 'Settings', icon: Settings },
+]
+
+interface AppSidebarProps {
+  autoTradeEnabled?: boolean
+  scanning?: boolean
+}
+
+export function AppSidebar({ autoTradeEnabled = false, scanning = false }: AppSidebarProps) {
+  const pathname = usePathname()
+
+  return (
+    <aside className="fixed left-0 top-0 h-full w-16 lg:w-56 bg-sidebar border-r border-sidebar-border flex flex-col z-40">
+      {/* Logo */}
+      <div className="h-14 flex items-center px-3 lg:px-4 border-b border-sidebar-border shrink-0">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
+            <Zap className="w-4 h-4 text-primary-foreground" />
+          </div>
+          <span className="hidden lg:block font-bold text-sm text-foreground tracking-tight">
+            Polytrade <span className="text-primary">AI</span>
+          </span>
+        </div>
+      </div>
+
+      {/* Status indicator */}
+      <div className="px-3 lg:px-4 py-3 border-b border-sidebar-border">
+        <div className="flex items-center gap-2">
+          <div className={cn(
+            'w-2 h-2 rounded-full shrink-0',
+            autoTradeEnabled ? 'bg-profit animate-pulse' : 'bg-muted-foreground'
+          )} />
+          <span className={cn(
+            'hidden lg:block text-xs font-medium',
+            autoTradeEnabled ? 'text-profit' : 'text-muted-foreground'
+          )}>
+            {autoTradeEnabled ? 'Auto Trade: ON' : 'Auto Trade: OFF'}
+          </span>
+        </div>
+        {scanning && (
+          <div className="hidden lg:flex items-center gap-2 mt-1">
+            <Activity className="w-3 h-3 text-primary animate-pulse" />
+            <span className="text-xs text-primary">Scanning markets...</span>
+          </div>
+        )}
+      </div>
+
+      {/* Navigation */}
+      <nav className="flex-1 py-2 overflow-y-auto">
+        {navItems.map((item) => {
+          const Icon = item.icon
+          const active = pathname === item.href
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={cn(
+                'flex items-center gap-3 mx-2 px-2 lg:px-3 py-2.5 rounded-md text-sm font-medium transition-all',
+                active
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent'
+              )}
+            >
+              <Icon className={cn('w-4 h-4 shrink-0', active && 'text-primary')} />
+              <span className="hidden lg:block">{item.label}</span>
+            </Link>
+          )
+        })}
+      </nav>
+
+      {/* Footer */}
+      <div className="px-3 lg:px-4 py-3 border-t border-sidebar-border">
+        <p className="hidden lg:block text-xs text-muted-foreground text-center">
+          Polytrade AI v1.0
+        </p>
+      </div>
+    </aside>
+  )
+}
