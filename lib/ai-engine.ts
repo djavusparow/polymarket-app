@@ -84,7 +84,7 @@ Respond ONLY with valid JSON in this exact format:
 async function callAI(
   systemPrompt: string,
   marketContext: string,
-  model = 'openrouter/claude-sonnet-4'
+  model = 'openrouter/meta-llama/llama-4-scout:free'
 ): Promise<Record<string, unknown> | null> {
   try {
     const res = await fetch(LLM_ENDPOINT, {
@@ -97,7 +97,7 @@ async function callAI(
           { role: 'user', content: marketContext },
         ],
         temperature: 0.3,
-        max_tokens: 512,
+        max_tokens: 300,
       }),
     })
     if (!res.ok) {
