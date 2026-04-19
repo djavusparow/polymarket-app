@@ -381,32 +381,52 @@ export function updateTradeWithPrice(
   if (idx === -1) return
 
   const trade = trades[idx]
+  
+  // Fix: Handle potentially undefined stop_loss/take_profit using fallback values
+  const stopLoss = trade.stop_loss ?? (trade.side === 'YES' ? 0 : 1)
+  const takeProfit = trade.take_profit ?? (trade.side === 'YES' ? 1 : 0)
+
   const shares = trade.size / trade.entry_price
   const pnl = (newPrice - trade.entry_price) * shares
   const pnl_pct = ((newPrice - trade.entry_price) / trade.entry_price) * 100
 
   const newStatus = (() => {
+    // Use the fallback values for comparison
     if (
-      (trade.side === 'YES' && newPrice <= trade.stop_loss) ||
-      (trade.side === 'NO' && newPrice >= trade.stop_loss)
+      (trade.side === 'YES' && newPrice <= stopLoss) ||
+      (trade.side === 'NO' && newPrice >= stopLoss)
     ) {
       return 'STOP_LOSS'
     }
     if (
-      (trade.side === 'YES' && newPrice >= trade.take_profit) ||
-      (trade.side === 'NO' && newPrice <= trade.take_profit)
+      (trade.side === 'YES' && newPrice >= takeProfit) ||
+      (trade.side === 'NO' && newPrice <= takeProfit)
     ) {
       return 'TAKE_PROFIT'
     }
     return trade.status
   })()
 
-  trades[idx] = {
-    ...trade,
-    current_price: newPrice,
-    pnl,
-    pnl_pct,
-    status: newStatus,
+  // Apply updates: if status changes to STOP_LOSS or TAKE_PROFIT, record exit details
+  if (newStatus !== trade.status && ['STOP_LOSS', 'TAKE_PROFIT'].includes(newStatus)) {
+    trades[idx] = {
+      ...trade,
+      current_price: newPrice,
+      exit_price: newPrice,
+      closed_at: Date.now(),
+      pnl,
+      pnl_pct,
+      status: newStatus,
+    }
+  } else {
+    trades[idx] = {
+      ...trade,
+      current_price: newPrice,
+      pnl,
+      pnl_pct,
+      status: newStatus,
+    }
   }
+
   saveTrades(trades)
 }
