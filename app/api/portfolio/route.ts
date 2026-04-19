@@ -40,59 +40,66 @@ export async function GET(request: Request) {
 
   try {
     // ── 1. USDC Balance from CLOB (L2 authenticated) ──────────────────────────
-    // asset_type=0 → USDC
-    const balPath = '/balance-allowance?asset_type=0'
+    // Perbaikan: asset_type=COLLATERAL untuk USDC (bukan asset_type=0)
+    const balPath = '/balance-allowance?asset_type=COLLATERAL'
     const balHeaders = await buildClobHeaders(creds, 'GET', balPath)
 
-    const [balRes, ordersRes, posRes] = await Promise.all([
+    // ── 2. Open orders from CLOB (L2 authenticated) ─────────────────────────
+    const ordPath = '/orders'
+    const ordHeaders = await buildClobHeaders(creds, 'GET', ordPath)
+
+    // ── 3. Open Positions from Data API (public by wallet address) ──────────
+    const posUrl = `${DATA_HOST}/positions?user=${encodeURIComponent(
+      creds.funderAddress
+    )}&sizeThreshold=.1`
+
+    // Perbaikan: Gunakan Promise.allSettled untuk individual error handling
+    const [balRes, ordersRes, posRes] = await Promise.allSettled([
       fetch(`${CLOB_HOST}${balPath}`, { headers: balHeaders, cache: 'no-store' }),
-
-      // ── 2. Open orders from CLOB (L2 authenticated) ───────────────────────
-      (async () => {
-        const ordPath = '/orders'
-        const ordHeaders = await buildClobHeaders(creds, 'GET', ordPath)
-        return fetch(`${CLOB_HOST}${ordPath}`, {
-          headers: ordHeaders,
-          cache: 'no-store',
-        })
-      })(),
-
-      // ── 3. Open Positions from Data API (public by wallet address) ────────
-      fetch(
-        `${DATA_HOST}/v2/positions?user=${encodeURIComponent(
-          creds.funderAddress
-        )}&sizeThreshold=.1`,
-        { cache: 'no-store' }
-      ),
+      fetch(`${CLOB_HOST}${ordPath}`, { headers: ordHeaders, cache: 'no-store' }),
+      fetch(posUrl, { cache: 'no-store' }),
     ])
 
     // ---------- Balance parsing (fixed) ----------
     let balance = 0
-    if (balRes.ok) {
-      const balData = await balRes.json()
-      const rawBalance = balData?.balance // <-- only read the proper field
-      const parsed = typeof rawBalance === 'string' ? parseFloat(rawBalance) : rawBalance
+    if (balRes.status === 'fulfilled' && balRes.value.ok) {
+      try {
+        const balData = await balRes.value.json()
+        const rawBalance = balData?.balance
+        const parsed =
+          typeof rawBalance === 'string' ? parseFloat(rawBalance) : rawBalance
 
-      // Pastikan kita mendapat angka yang valid sebelum scaling.
-      if (typeof parsed === 'number' && !isNaN(parsed)) {
-        // Jika nilai yang diterima adalah integer besar (misal 1 000 000 USDC * 1e6),
-        // ubah menjadi satuan USDC standar dengan membagi 1 000 000.
-        balance = parsed >= 1_000 ? parsed / 1_000_000 : parsed
+        // Pastikan kita mendapat angka yang valid sebelum scaling.
+        if (typeof parsed === 'number' && !isNaN(parsed)) {
+          // Perbaikan: USDC memiliki 6 decimals. Jika nilai >= 1,000,000 (1 USDC),
+          // bagi dengan 1,000,000 untuk mengonversi ke satuan USDC standar.
+          balance = parsed >= 1_000_000 ? parsed / 1_000_000 : parsed
+        }
+      } catch (e) {
+        console.error('Error parsing balance:', e)
       }
     }
 
     // ---------- Positions ----------
     let positions: unknown[] = []
-    if (posRes.ok) {
-      const posData = await posRes.json()
-      positions = Array.isArray(posData) ? posData : posData?.results ?? []
+    if (posRes.status === 'fulfilled' && posRes.value.ok) {
+      try {
+        const posData = await posRes.value.json()
+        positions = Array.isArray(posData) ? posData : posData?.results ?? []
+      } catch (e) {
+        console.error('Error parsing positions:', e)
+      }
     }
 
     // ---------- Orders ----------
     let orders: unknown[] = []
-    if (ordersRes.ok) {
-      const ordData = await ordersRes.json()
-      orders = Array.isArray(ordData) ? ordData : ordData?.data ?? []
+    if (ordersRes.status === 'fulfilled' && ordersRes.value.ok) {
+      try {
+        const ordData = await ordersRes.value.json()
+        orders = Array.isArray(ordData) ? ordData : ordData?.data ?? []
+      } catch (e) {
+        console.error('Error parsing orders:', e)
+      }
     }
 
     return NextResponse.json({
