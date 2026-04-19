@@ -66,9 +66,7 @@
     "ws": "^8.18.0",
     "ethers": "5.8.0",
     "viem": "^2.21.0",
-    "@polymarket/clob-client": "^6.8.0",
-    "@polymarket/builder-relayer-client": "^1.0.0",
-    "@polymarket/builder-signing-sdk": "^1.0.0"
+    "@polymarket/clob-client": "^6.8.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.0",
