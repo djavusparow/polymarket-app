@@ -1,6 +1,6 @@
 'use client'
 
-import { TrendingUp, TrendingDown, Activity, Target, DollarSign, Percent } from 'lucide-react'
+import { TrendingUp, TrendingDown, Activity, Target, DollarSign } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { PortfolioStats } from '@/lib/types'
 
@@ -9,6 +9,9 @@ interface PortfolioStatsProps {
 }
 
 export function PortfolioStatsBar({ stats }: PortfolioStatsProps) {
+  // Null check to prevent errors if stats is undefined
+  if (!stats) return null
+
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
       <StatCard
