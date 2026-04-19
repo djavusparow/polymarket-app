@@ -130,14 +130,14 @@ async function callAI(
       return null
     }
   } catch (e) {
-    clearTimeout(timeoutId)
-    if (e.name === 'AbortError') {
-      console.error('[ai-engine] API call timed out')
-    } else {
-      console.error('[ai-engine] callAI error:', e)
-    }
-    return null
+  clearTimeout(timeoutId)
+  if (e instanceof Error && e.name === 'AbortError') {
+    console.error('[ai-engine] API call timed out')
+  } else {
+    console.error('[ai-engine] callAI error:', e)
   }
+  return null
+}
 }
 
 function buildMarketContext(market: PolymarketMarket): string {
