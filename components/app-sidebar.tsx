@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
-  LayoutDashboard, TrendingUp, BrainCircuit, Settings, History, Wallet, Zap, Activity
+  LayoutDashboard, TrendingUp, BrainCircuit, Settings, History, Wallet, Zap, Activity, Wifi, WifiOff
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -19,9 +19,10 @@ const navItems = [
 interface AppSidebarProps {
   autoTradeEnabled?: boolean
   scanning?: boolean
+  connected?: boolean // Added WebSocket connection status
 }
 
-export function AppSidebar({ autoTradeEnabled = false, scanning = false }: AppSidebarProps) {
+export function AppSidebar({ autoTradeEnabled = false, scanning = false, connected = true }: AppSidebarProps) {
   const pathname = usePathname()
 
   return (
@@ -52,12 +53,30 @@ export function AppSidebar({ autoTradeEnabled = false, scanning = false }: AppSi
             {autoTradeEnabled ? 'Auto Trade: ON' : 'Auto Trade: OFF'}
           </span>
         </div>
+        
         {scanning && (
           <div className="hidden lg:flex items-center gap-2 mt-1">
             <Activity className="w-3 h-3 text-primary animate-pulse" />
             <span className="text-xs text-primary">Scanning markets...</span>
           </div>
         )}
+
+        {/* WebSocket Connection Status with Heartbeat */}
+        <div className="hidden lg:flex items-center gap-2 mt-1">
+          {connected ? (
+            <>
+              <Wifi className="w-3.5 h-3.5 text-profit" />
+              <span className="text-xs text-muted-foreground">Connected</span>
+              {/* Heartbeat indicator */}
+              <div className="w-1 h-1 rounded-full bg-profit animate-pulse" />
+            </>
+          ) : (
+            <>
+              <WifiOff className="w-3.5 h-3.5 text-loss" />
+              <span className="text-xs text-muted-foreground">Disconnected</span>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Navigation */}
