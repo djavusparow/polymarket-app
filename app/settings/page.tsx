@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Key, Eye, EyeOff, Shield, CheckCircle, AlertTriangle, Trash2, ExternalLink, Info } from 'lucide-react'
+import { Key, Eye, EyeOff, Shield, CheckCircle, AlertTriangle, Trash2, ExternalLink, Info, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AppSidebar } from '@/components/app-sidebar'
 import { AppHeader } from '@/components/app-header'
@@ -18,7 +18,39 @@ const EMPTY_CREDS: AccountCredentials = {
   api_secret: '',
   api_passphrase: '',
   funder_address: '',
-  signature_type: 1,
+  signature_type: 0
+}
+
+// ─── Validation Helper ─────────────────────────────────────────────────────────
+const validateCreds = (creds: AccountCredentials): string[] => {
+  const errors: string[] = []
+  
+  // Private Key Validation
+  if (creds.private_key && !creds.private_key.startsWith('0x')) {
+    errors.push('Private key must start with 0x')
+  }
+  
+  // Funder Address Validation
+  if (creds.funder_address && !creds.funder_address.startsWith('0x')) {
+    errors.push('Funder address must start with 0x')
+  }
+
+  // API Key UUID Validation
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  if (creds.api_key && !uuidRegex.test(creds.api_key)) {
+    errors.push('API Key must be a valid UUID format')
+  }
+
+  // API Secret Base64 Validation
+  const base64Regex = /^[A-Za-z0-9+/]+=*$/
+  if (creds.api_secret && !base64Regex.test(creds.api_secret)) {
+    errors.push('API Secret must be base64 encoded')
+  }
+
+  // Placeholder Check
+  if (creds.api_key === 'YOUR_API_KEY') errors.push('Invalid API Key placeholder')
+  
+  return errors
 }
 
 export default function SettingsPage() {
@@ -28,6 +60,7 @@ export default function SettingsPage() {
   const [credsSaved, setCredsSaved] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [validationErrors, setValidationErrors] = useState<string[]>([])
   const portfolio = calculatePortfolioStats()
 
   useEffect(() => {
@@ -35,12 +68,23 @@ export default function SettingsPage() {
     if (stored) setCreds({ ...EMPTY_CREDS, ...stored })
   }, [])
 
+  // Validate credentials on change
+  useEffect(() => {
+    setValidationErrors(validateCreds(creds))
+  }, [creds])
+
   const handleSaveSettings = (s: TradingSettings) => {
     setSettings(s)
     saveSettings(s)
   }
 
   const handleSaveCreds = () => {
+    const errors = validateCreds(creds)
+    if (errors.length > 0) {
+      setTestResult({ ok: false, msg: errors.join(', ') })
+      return
+    }
+
     saveCredentials(creds)
     setCredsSaved(true)
     setTestResult(null)
@@ -68,10 +112,16 @@ export default function SettingsPage() {
         },
       })
       const data = await res.json()
-      if (data.configured && !data.error) {
+      
+      if (data.error) {
+        // Specific error handling for invalid signatures
+        if (data.error.includes('Invalid signature') || data.error.includes('authentication failed')) {
+           setTestResult({ ok: false, msg: 'Auth failed: Invalid credentials or signature type mismatch.' })
+        } else {
+           setTestResult({ ok: false, msg: `Error: ${data.error}` })
+        }
+      } else if (data.configured) {
         setTestResult({ ok: true, msg: `Connected! Balance: $${(data.balance ?? 0).toFixed(2)} USDC` })
-      } else if (data.configured && data.error) {
-        setTestResult({ ok: false, msg: `Auth error: ${data.error}` })
       } else {
         setTestResult({ ok: false, msg: data.message ?? 'Credentials not configured or invalid.' })
       }
@@ -160,6 +210,19 @@ export default function SettingsPage() {
                   </p>
                 </div>
 
+                {/* Validation Errors */}
+                {validationErrors.length > 0 && (
+                  <div className="flex items-center gap-2 p-3 bg-loss/10 border border-loss/20 rounded-lg text-loss text-xs">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <div>
+                      <p className="font-medium">Validation Errors:</p>
+                      <ul className="list-disc list-inside">
+                        {validationErrors.map((err, i) => <li key={i}>{err}</li>)}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+
                 {/* How-to guide */}
                 <div className="p-3 bg-secondary/50 rounded-lg text-xs space-y-1 text-muted-foreground">
                   <p className="text-foreground font-medium mb-2">How to get your credentials:</p>
@@ -234,11 +297,12 @@ print('Pass   :', r.api_passphrase)
                     </label>
                     <select
                       value={creds.signature_type}
-                      onChange={e => setCreds(c => ({ ...c, signature_type: Number(e.target.value) as 0 | 1 }))}
+                      onChange={e => setCreds(c => ({ ...c, signature_type: Number(e.target.value) as 0 | 1 | 2 }))}
                       className="w-full h-9 bg-secondary border border-border rounded-md px-3 text-sm text-foreground focus:outline-none focus:border-primary transition-colors"
                     >
                       <option value={1}>1 — POLY_PROXY (Email / Google / Magic Link)</option>
                       <option value={0}>0 — EOA (MetaMask / Hardware Wallet)</option>
+                      <option value={2}>2 — GNOSIS_SAFE (Proxy Wallet)</option>
                     </select>
                     <p className="text-xs text-muted-foreground mt-0.5">
                       Use <strong>1</strong> if you signed up with email or Google. Use <strong>0</strong> for MetaMask.
@@ -276,7 +340,7 @@ print('Pass   :', r.api_passphrase)
                   </button>
                   <button
                     onClick={handleTestConnection}
-                    disabled={testing || !creds.api_key}
+                    disabled={testing || !creds.api_key || validationErrors.length > 0}
                     className="px-4 h-9 rounded-md border border-border text-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {testing ? 'Testing...' : 'Test Connection'}
@@ -316,7 +380,7 @@ print('Pass   :', r.api_passphrase)
                   { key: 'POLYMARKET_API_SECRET',       desc: 'CLOB API secret (base64) for HMAC-SHA256 signing' },
                   { key: 'POLYMARKET_API_PASSPHRASE',   desc: 'CLOB API passphrase from create_or_derive_api_creds()' },
                   { key: 'POLYMARKET_FUNDER_ADDRESS',   desc: 'Your proxy wallet address from polymarket.com/settings' },
-                  { key: 'POLYMARKET_SIGNATURE_TYPE',   desc: '0 = EOA (MetaMask) | 1 = POLY_PROXY (Email/Magic)  [default: 1]' },
+                  { key: 'POLYMARKET_SIGNATURE_TYPE',   desc: '0 = EOA (MetaMask) | 1 = POLY_PROXY (Email/Magic) | 2 = GNOSIS_SAFE [default: 1]' },
                 ].map(env => (
                   <div key={env.key} className="flex items-start gap-3 text-xs">
                     <code className="font-mono text-primary bg-secondary px-2 py-0.5 rounded whitespace-nowrap shrink-0">
