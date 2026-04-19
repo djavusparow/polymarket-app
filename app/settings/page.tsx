@@ -18,7 +18,7 @@ const EMPTY_CREDS: AccountCredentials = {
   api_secret: '',
   api_passphrase: '',
   funder_address: '',
-  signature_type: 0
+  signature_type: 0,
 }
 
 // ─── Validation Helper ─────────────────────────────────────────────────────────
