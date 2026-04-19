@@ -1,8 +1,9 @@
 import type { PolymarketMarket, MarketPrice } from './types'
 
-const GAMMA_API  = 'https://gamma-api.polymarket.com'
-const CLOB_API   = 'https://clob.polymarket.com'
-const DATA_API   = 'https://data-api.polymarket.com'
+// URL Constants (Production Endpoints)
+const GAMMA_API  = 'Gamma API'
+const CLOB_API   = 'CLOB API'
+const DATA_API   = 'Data API'
 
 // ─── Public Market Data (Gamma API — no auth) ─────────────────────────────────
 
@@ -30,7 +31,8 @@ export async function fetchTopVolumeMarkets(limit = 20): Promise<PolymarketMarke
       active: 'true',
       closed: 'false',
       limit: String(limit),
-      order: 'volume24hr',
+      // Perbaikan: Menggunakan 'volume_24hr' sesuai dokumentasi Gamma API
+      order: 'volume_24hr',
       ascending: 'false',
     })
     const res = await fetch(`${GAMMA_API}/markets?${params}`, { cache: 'no-store' })
@@ -45,9 +47,12 @@ export async function fetchTopVolumeMarkets(limit = 20): Promise<PolymarketMarke
 
 export async function fetchMarketByConditionId(conditionId: string): Promise<PolymarketMarket | null> {
   try {
-    const res = await fetch(`${GAMMA_API}/markets/${conditionId}`, { cache: 'no-store' })
+    // Perbaikan: Menggunakan query parameter 'condition_id' di endpoint /markets
+    const res = await fetch(`${GAMMA_API}/markets?condition_id=${encodeURIComponent(conditionId)}`, { cache: 'no-store' })
     if (!res.ok) return null
-    return await res.json()
+    const data = await res.json()
+    // Response biasanya array, ambil item pertama
+    return Array.isArray(data) && data.length > 0 ? data[0] : null
   } catch {
     return null
   }
@@ -77,8 +82,8 @@ export async function fetchTokenPrice(tokenId: string): Promise<MarketPrice | nu
 export async function fetchMidpointPrices(tokenIds: string[]): Promise<Record<string, number>> {
   if (tokenIds.length === 0) return {}
   try {
-    // POST /midpoints body: { token_ids: [...] }
-    const res = await fetch(`${CLOB_API}/midpoints`, {
+    // POST /midpoint body: { token_ids: [...] }
+    const res = await fetch(`${CLOB_API}/midpoint`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token_ids: tokenIds }),
