@@ -31,14 +31,18 @@ export function useRealtimePrices(tokenIds: string[]) {
   const retriesRef = useRef(0)
   const activeTokensRef = useRef<string[]>([])
 
-  const subscribe = useCallback((ws: WebSocket, ids: string[]) => {
-    if (ws.readyState !== WebSocket.OPEN || ids.length === 0) return
-    ws.send(JSON.stringify({
-      assets_ids: ids,
-      type: 'market',
-      custom_feature_enabled: true,  // enables best_bid_ask events
-    }))
-  }, [])
+  // In useRealtimePrices hook (inside connect callback)
+const subscribe = useCallback((ws: WebSocket, ids: string[]) => {
+  if (ws.readyState !== WebSocket.OPEN || ids.length === 0) return
+  
+  // Added custom_feature_enabled: true
+  ws.send(JSON.stringify({
+    type: 'market',
+    assets_ids: ids,
+    custom_feature_enabled: true, 
+  }))
+}, [])
+
 
   const connect = useCallback(() => {
     if (activeTokensRef.current.length === 0) return
