@@ -25,7 +25,7 @@ export function MarketCard({ market, signal, onAnalyze, analyzing, onExecute, re
   const noPrice  = yesPrice > 0 ? 1 - yesPrice : 0
   
   // Handle volume fallback: prefer 24hr, then total volume, then 0
-  const rawVolume = market.volume_24hr ?? market.volume ?? 0
+  const rawVolume = market.volume24hr ?? market.volume ?? 0
   const volume = formatVolume(rawVolume)
   
   const isLive   = realtimeYesPrice !== undefined && realtimeYesPrice > 0
