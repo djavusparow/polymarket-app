@@ -62,14 +62,14 @@ export default function HistoryPage() {
       t.status === 'PENDING' || 
       t.status === 'MATCHED' || 
       t.status === 'MINED' ||
-      t.status === 'RETRYING'  // Added for retrying orders
+      t.status === 'RETRYING'
     )
     // Include CLOB API status for "closed" filter
     if (filter === 'closed') return (
       t.status === 'CLOSED' || 
       t.status === 'CONFIRMED' || 
       t.status === 'CANCELLED' ||
-      t.status === 'FAILED'  // Added for failed orders
+      t.status === 'FAILED'
     )
     if (filter === 'stop_loss') return t.status === 'STOP_LOSS'
     if (filter === 'take_profit') return t.status === 'TAKE_PROFIT'
