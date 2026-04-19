@@ -14,7 +14,16 @@ interface TradeTableProps {
   showPagination?: boolean
 }
 
+// Updated STATUS_CONFIG with Polymarket API status codes + Custom statuses
 const STATUS_CONFIG: Record<string, { label: string; icon: React.ElementType; class: string }> = {
+  // Polymarket API Standard Statuses
+  MATCHED:     { label: 'Matched',     icon: Clock,          class: 'text-muted-foreground' },
+  MINED:       { label: 'Mined',       icon: Activity,       class: 'text-primary' },
+  CONFIRMED:   { label: 'Confirmed',   icon: CheckCircle,    class: 'text-profit' },
+  RETRYING:    { label: 'Retrying',    icon: AlertTriangle,  class: 'text-chart-4' },
+  FAILED:      { label: 'Failed',      icon: XCircle,        class: 'text-loss' },
+
+  // Custom Internal Statuses
   PENDING:     { label: 'Pending',     icon: Clock,          class: 'text-muted-foreground' },
   OPEN:        { label: 'Open',        icon: Activity,       class: 'text-primary' },
   CLOSED:      { label: 'Closed',      icon: CheckCircle,    class: 'text-profit' },
@@ -27,6 +36,14 @@ export function TradeTable({ trades, title = 'Trade History', showPagination = t
   const [page, setPage] = useState(0)
   const [expandedRow, setExpandedRow] = useState<string | null>(null)
   const PAGE_SIZE = 10
+  
+  // Safely handle date parsing for both timestamps (number) and ISO strings (string)
+  const parseDate = (dateValue: number | string | undefined): Date => {
+    if (!dateValue) return new Date()
+    if (typeof dateValue === 'number') return new Date(dateValue)
+    return new Date(dateValue)
+  }
+
   const paged = trades.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
   const totalPages = Math.ceil(trades.length / PAGE_SIZE)
 
@@ -65,6 +82,8 @@ export function TradeTable({ trades, title = 'Trade History', showPagination = t
               const pnl = trade.pnl ?? 0
               const currentPrice = trade.current_price ?? trade.entry_price
               const isExpanded = expandedRow === trade.id
+              
+              // Fallback to 'OPEN' if status is unknown
               const StatusCfg = STATUS_CONFIG[trade.status] ?? STATUS_CONFIG['OPEN']
               const StatusIcon = StatusCfg.icon
 
@@ -125,7 +144,7 @@ export function TradeTable({ trades, title = 'Trade History', showPagination = t
                   </td>
                   <td className="px-3 py-2.5">
                     <span className="text-xs text-muted-foreground">
-                      {new Date(trade.opened_at).toLocaleDateString()}
+                      {parseDate(trade.opened_at).toLocaleDateString()}
                     </span>
                   </td>
                   <td className="px-3 py-2.5">
@@ -141,7 +160,7 @@ export function TradeTable({ trades, title = 'Trade History', showPagination = t
                         <InfoCell label="Order ID" value={trade.order_id ?? 'N/A'} mono />
                         <InfoCell label="Stop Loss" value={trade.stop_loss ? `${(trade.stop_loss * 100).toFixed(1)}¢` : 'N/A'} />
                         <InfoCell label="Take Profit" value={trade.take_profit ? `${(trade.take_profit * 100).toFixed(1)}¢` : 'N/A'} />
-                        <InfoCell label="Opened" value={new Date(trade.opened_at).toLocaleString()} />
+                        <InfoCell label="Opened" value={parseDate(trade.opened_at).toLocaleString()} />
                       </div>
                       {trade.ai_rationale && (
                         <div className="mt-2 p-2 bg-background/50 rounded text-xs text-muted-foreground leading-relaxed">
