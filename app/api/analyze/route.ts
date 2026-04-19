@@ -7,8 +7,12 @@ export async function POST(request: Request) {
     const body = await request.json()
     const market: PolymarketMarket = body.market
 
-    if (!market || !market.question) {
-      return NextResponse.json({ error: 'Invalid market data' }, { status: 400 })
+    // Validate required fields
+    if (!market || !market.question || !market.condition_id) {
+      return NextResponse.json(
+        { error: 'Invalid market data - missing required fields' },
+        { status: 400 }
+      )
     }
 
     const signal = await analyzeMarket(market)
