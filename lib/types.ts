@@ -157,7 +157,7 @@ export interface AccountCredentials {
   api_passphrase: string
   funder_address: string
   /** 0 = EOA (MetaMask / hardware wallet), 1 = POLY_PROXY (email / Magic link) */
-  signature_type: 0 | 1
+  signature_type: 0 | 1 | 2
 }
 
 // ─── Portfolio Types ──────────────────────────────────────────────────────────
