@@ -17,7 +17,7 @@ export interface PolymarketMarket {
   active: boolean
   closed: boolean
   volume?: number
-  volume_24hr?: number // Sesuai dokumentasi Gamma API
+  volume24hr?: number // Sesuai dokumentasi Gamma API
   liquidity?: number
   best_bid?: number
   best_ask?: number
