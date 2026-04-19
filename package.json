@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "lint": "next lint",
+    "type-check": "tsc --noEmit"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
@@ -46,6 +48,7 @@
     "input-otp": "1.4.2",
     "lucide-react": "^0.564.0",
     "@noble/curves": "^1.6.0",
+    "@noble/hashes": "^1.6.1",
     "next": "16.2.0",
     "next-themes": "^0.4.6",
     "react": "19.2.4",
@@ -56,16 +59,23 @@
     "recharts": "2.15.0",
     "sonner": "^1.7.1",
     "tailwind-merge": "^3.3.1",
+    "tailwindcss-animate": "1.0.7",
     "vaul": "^1.1.2",
     "zod": "^3.24.1",
-    "tailwindcss-animate": "1.0.7",
-    "@noble/hashes": "^1.6.1"
+    
+    "ws": "^8.18.0",
+    "ethers": "5.8.0",
+    "viem": "^2.21.0",
+    "@polymarket/clob-client": "^6.8.0",
+    "@polymarket/builder-relayer-client": "^1.0.0",
+    "@polymarket/builder-signing-sdk": "^1.0.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.0",
     "@types/node": "^22",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@types/ws": "^8.5.12",
     "eslint": "^9.0.0",
     "postcss": "^8.5",
     "tailwindcss": "^4.2.0",
