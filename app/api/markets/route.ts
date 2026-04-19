@@ -7,15 +7,15 @@ export async function GET(request: Request) {
   
   // Enforce maximum limit of 100 to prevent resource abuse
   const limit = Math.min(parseInt(searchParams.get('limit') ?? '30', 10), 100)
-  const offset = parseInt(searchParams.get('offset') ?? '0', 10)
+  // Note: Offset is removed as Polymarket API uses keyset pagination (cursor-based)
 
   try {
     let markets
     if (type === 'top') {
       markets = await serverFetchTopMarkets()
     } else {
-      // Pass offset for complete pagination support
-      markets = await serverFetchMarkets(limit, offset)
+      // serverFetchMarkets accepts only 'limit', not 'offset'
+      markets = await serverFetchMarkets(limit)
     }
     
     return NextResponse.json({ markets, total: markets.length })
