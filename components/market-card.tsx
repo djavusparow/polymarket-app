@@ -23,7 +23,11 @@ export function MarketCard({ market, signal, onAnalyze, analyzing, onExecute, re
   const staticYesPrice = parseOutcomePrice(market.outcomePrices)
   const yesPrice = realtimeYesPrice !== undefined && realtimeYesPrice > 0 ? realtimeYesPrice : staticYesPrice
   const noPrice  = yesPrice > 0 ? 1 - yesPrice : 0
-  const volume   = formatVolume(market.volume24hr)
+  
+  // Handle volume fallback: prefer 24hr, then total volume, then 0
+  const rawVolume = market.volume_24hr ?? market.volume ?? 0
+  const volume = formatVolume(rawVolume)
+  
   const isLive   = realtimeYesPrice !== undefined && realtimeYesPrice > 0
 
   return (
