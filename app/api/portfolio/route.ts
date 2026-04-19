@@ -21,7 +21,9 @@ export async function GET(request: Request) {
   try {
     const raw = request.headers.get('X-Clob-Creds')
     if (raw) clientCreds = JSON.parse(raw)
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   const creds = resolveCredentials(clientCreds)
 
@@ -31,49 +33,62 @@ export async function GET(request: Request) {
       positions: [],
       orders: [],
       configured: false,
-      message: 'Credentials not configured. Enter your API credentials in Settings.',
+      message:
+        'Credentials not configured. Enter your API credentials in Settings.',
     })
   }
 
   try {
     // ── 1. USDC Balance from CLOB (L2 authenticated) ──────────────────────────
-    // Correct endpoint: asset_type=0 means USDC, asset_type=1 means conditional token
-    // Ref: https://docs.polymarket.com/developers/CLOB/rest-api/balances
+    // asset_type=0 → USDC
     const balPath = '/balance-allowance?asset_type=0'
     const balHeaders = await buildClobHeaders(creds, 'GET', balPath)
 
     const [balRes, ordersRes, posRes] = await Promise.all([
       fetch(`${CLOB_HOST}${balPath}`, { headers: balHeaders, cache: 'no-store' }),
+
       // ── 2. Open orders from CLOB (L2 authenticated) ───────────────────────
       (async () => {
         const ordPath = '/orders'
         const ordHeaders = await buildClobHeaders(creds, 'GET', ordPath)
-        return fetch(`${CLOB_HOST}${ordPath}`, { headers: ordHeaders, cache: 'no-store' })
+        return fetch(`${CLOB_HOST}${ordPath}`, {
+          headers: ordHeaders,
+          cache: 'no-store',
+        })
       })(),
+
       // ── 3. Open Positions from Data API (public by wallet address) ────────
       fetch(
-        `${DATA_HOST}/v2/positions?user=${encodeURIComponent(creds.funderAddress)}&sizeThreshold=.1`,
+        `${DATA_HOST}/v2/positions?user=${encodeURIComponent(
+          creds.funderAddress
+        )}&sizeThreshold=.1`,
         { cache: 'no-store' }
       ),
     ])
 
+    // ---------- Balance parsing (fixed) ----------
     let balance = 0
     if (balRes.ok) {
       const balData = await balRes.json()
-      const raw = parseFloat(
-        balData?.balance ?? balData?.USDC ?? balData?.asset ?? '0'
-      )
-      if (!isNaN(raw)) {
-        balance = raw >= 1_000 ? raw / 1_000_000 : raw
+      const rawBalance = balData?.balance // <-- only read the proper field
+      const parsed = typeof rawBalance === 'string' ? parseFloat(rawBalance) : rawBalance
+
+      // Pastikan kita mendapat angka yang valid sebelum scaling.
+      if (typeof parsed === 'number' && !isNaN(parsed)) {
+        // Jika nilai yang diterima adalah integer besar (misal 1 000 000 USDC * 1e6),
+        // ubah menjadi satuan USDC standar dengan membagi 1 000 000.
+        balance = parsed >= 1_000 ? parsed / 1_000_000 : parsed
       }
     }
 
+    // ---------- Positions ----------
     let positions: unknown[] = []
     if (posRes.ok) {
       const posData = await posRes.json()
       positions = Array.isArray(posData) ? posData : posData?.results ?? []
     }
 
+    // ---------- Orders ----------
     let orders: unknown[] = []
     if (ordersRes.ok) {
       const ordData = await ordersRes.json()
@@ -86,11 +101,16 @@ export async function GET(request: Request) {
       orders,
       configured: true,
     })
-
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error'
     return NextResponse.json(
-      { balance: 0, positions: [], orders: [], configured: true, error: `Portfolio fetch failed: ${msg}` },
+      {
+        balance: 0,
+        positions: [],
+        orders: [],
+        configured: true,
+        error: `Portfolio fetch failed: ${msg}`,
+      },
       { status: 500 }
     )
   }
