@@ -3,6 +3,8 @@
 export interface PolymarketToken {
   token_id: string
   outcome: string
+  price?: number
+  winner?: boolean
 }
 
 export interface PolymarketMarket {
@@ -15,7 +17,7 @@ export interface PolymarketMarket {
   active: boolean
   closed: boolean
   volume?: number
-  volume24hr?: number
+  volume_24hr?: number // Sesuai dokumentasi Gamma API
   liquidity?: number
   best_bid?: number
   best_ask?: number
@@ -23,11 +25,37 @@ export interface PolymarketMarket {
   outcomes?: string[]
   outcomePrices?: string[]
   clobTokenIds?: string[]
-  tokens?: PolymarketToken[]
+  tokens?: PolymarketToken[] // Sesuai dokumentasi resmi (menggunakan tipe PolymarketToken)
   image?: string
   icon?: string
   minimum_tick_size?: number
   neg_risk?: boolean
+
+  // Field tambahan yang disarankan sebelumnya
+  market_slug?: string
+  maker_base_fee?: number
+  taker_base_fee?: number
+  accepting_orders?: boolean
+  archived?: boolean
+  fpmm?: string
+  game_start_time?: string
+  rewards?: {
+    max_spread: number
+    min_size: number
+    rates: any | null
+  }
+
+  // Field tambahan dari dokumentasi resmi terbaru
+  question_id?: string
+  accepting_order_timestamp?: string | null
+  enable_order_book?: boolean
+  is_50_50_outcome?: boolean
+  minimum_order_size?: number
+  neg_risk_market_id?: string
+  neg_risk_request_id?: string
+  notifications_enabled?: boolean
+  seconds_delay?: number
+  tags?: string[]
 }
 
 export interface MarketPrice {
@@ -40,7 +68,7 @@ export interface MarketPrice {
 // ─── AI Signal Types ─────────────────────────────────────────────────────────
 
 export type SignalDirection = 'BUY' | 'SELL' | 'HOLD'
-// AI model labels shown in the UI
+
 export type AIModel = 'claude-sonnet' | 'ensemble'
 
 export interface AIAnalysis {
@@ -70,6 +98,7 @@ export interface CombinedSignal {
 // ─── Trade Types ──────────────────────────────────────────────────────────────
 
 export type TradeStatus = 'PENDING' | 'OPEN' | 'CLOSED' | 'CANCELLED' | 'STOP_LOSS' | 'TAKE_PROFIT'
+
 export type TradeSide = 'YES' | 'NO'
 
 export interface Trade {
@@ -111,7 +140,7 @@ export interface TradingSettings {
 }
 
 export interface AccountCredentials {
-  private_key: string
+  private_key: string  // Diperlukan untuk Wallet signer
   api_key: string
   api_secret: string
   api_passphrase: string
