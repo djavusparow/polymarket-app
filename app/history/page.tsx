@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { History, Download } from 'lucide-react'
+import { History, Download, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AppSidebar } from '@/components/app-sidebar'
 import { AppHeader } from '@/components/app-header'
@@ -14,17 +14,63 @@ type FilterStatus = 'all' | 'open' | 'closed' | 'stop_loss' | 'take_profit'
 export default function HistoryPage() {
   const [trades, setTrades] = useState<Trade[]>([])
   const [filter, setFilter] = useState<FilterStatus>('all')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  
   const settings = getSettings()
   const portfolio = calculatePortfolioStats()
 
+  // Fetch trades and set up polling for real-time updates
   useEffect(() => {
-    setTrades(getTrades())
+    let isMounted = true
+
+    const fetchTrades = () => {
+      try {
+        const data = getTrades()
+        if (isMounted) {
+          setTrades(data)
+          setError(null)
+        }
+      } catch (e) {
+        if (isMounted) {
+          setError(e instanceof Error ? e.message : 'Failed to load trades')
+        }
+      } finally {
+        if (isMounted) {
+          setLoading(false)
+        }
+      }
+    }
+
+    // Initial fetch
+    fetchTrades()
+
+    // Poll every 30 seconds for real-time updates
+    const interval = setInterval(fetchTrades, 30_000)
+
+    return () => {
+      isMounted = false
+      clearInterval(interval)
+    }
   }, [])
 
   const filtered = trades.filter(t => {
     if (filter === 'all') return true
-    if (filter === 'open') return t.status === 'OPEN' || t.status === 'PENDING'
-    if (filter === 'closed') return t.status === 'CLOSED'
+    // Include CLOB API statuses for "open" filter
+    if (filter === 'open') return (
+      t.status === 'OPEN' || 
+      t.status === 'PENDING' || 
+      t.status === 'MATCHED' || 
+      t.status === 'MINED' ||
+      t.status === 'RETRYING'  // Added for retrying orders
+    )
+    // Include CLOB API status for "closed" filter
+    if (filter === 'closed') return (
+      t.status === 'CLOSED' || 
+      t.status === 'CONFIRMED' || 
+      t.status === 'CANCELLED' ||
+      t.status === 'FAILED'  // Added for failed orders
+    )
     if (filter === 'stop_loss') return t.status === 'STOP_LOSS'
     if (filter === 'take_profit') return t.status === 'TAKE_PROFIT'
     return true
@@ -39,7 +85,13 @@ export default function HistoryPage() {
     const rows = [
       ['Date', 'Market', 'Side', 'Size', 'Entry', 'Exit', 'P&L', 'Status', 'Confidence'],
       ...trades.map(t => [
-        new Date(t.opened_at).toISOString(),
+        new Date(t.opened_at).toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
         t.question,
         t.side,
         t.size,
@@ -73,6 +125,14 @@ export default function HistoryPage() {
         />
 
         <main className="flex-1 p-4 space-y-4 overflow-auto">
+          {/* Error state */}
+          {error && (
+            <div className="flex items-center gap-2 p-3 bg-loss/10 border border-loss/20 rounded-lg text-loss text-sm">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
           {/* Summary stats */}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <SummaryCard label="Total Trades" value={String(trades.length)} />
@@ -116,14 +176,22 @@ export default function HistoryPage() {
             </div>
             <button
               onClick={exportCSV}
-              className="flex items-center gap-1.5 px-3 h-8 rounded-md border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-all"
+              disabled={trades.length === 0}
+              className="flex items-center gap-1.5 px-3 h-8 rounded-md border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-all disabled:opacity-50"
             >
               <Download className="w-3.5 h-3.5" />
               Export CSV
             </button>
           </div>
 
-          <TradeTable trades={filtered} title={`${filtered.length} trades`} />
+          {/* Loading or Trade Table */}
+          {loading ? (
+            <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
+              Loading trades...
+            </div>
+          ) : (
+            <TradeTable trades={filtered} title={`${filtered.length} trades`} />
+          )}
         </main>
       </div>
     </div>
