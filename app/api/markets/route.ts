@@ -4,7 +4,9 @@ import { serverFetchTopMarkets, serverFetchMarkets } from '@/lib/polymarket'
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const type = searchParams.get('type') ?? 'active'
-  const limit = parseInt(searchParams.get('limit') ?? '30', 10)
+  
+  // Enforce maximum limit of 100 to prevent resource abuse
+  const limit = Math.min(parseInt(searchParams.get('limit') ?? '30', 10), 100)
   const offset = parseInt(searchParams.get('offset') ?? '0', 10)
 
   try {
@@ -12,8 +14,10 @@ export async function GET(request: Request) {
     if (type === 'top') {
       markets = await serverFetchTopMarkets()
     } else {
-      markets = await serverFetchMarkets(limit)
+      // Pass offset for complete pagination support
+      markets = await serverFetchMarkets(limit, offset)
     }
+    
     return NextResponse.json({ markets, total: markets.length })
   } catch (e: unknown) {
     console.error('[api/markets] error:', e)
