@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Search, Filter, TrendingUp, Wifi, WifiOff } from 'lucide-react'
+import { Search, Filter, TrendingUp, Wifi, WifiOff, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AppSidebar } from '@/components/app-sidebar'
 import { AppHeader } from '@/components/app-header'
@@ -15,18 +15,18 @@ export default function MarketsPage() {
   const [signals, setSignals] = useState<Record<string, CombinedSignal>>({})
   const [analyzingId, setAnalyzingId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('all')
   const settings = getSettings()
   const portfolio = calculatePortfolioStats()
 
   // Collect YES token IDs for real-time WebSocket subscription
+  // Validated: ensures clobTokenIds exists and has at least one ID
   const tokenIds = useMemo(() => {
-    const ids: string[] = []
-    for (const m of markets) {
-      if (m.clobTokenIds?.[0]) ids.push(m.clobTokenIds[0])
-    }
-    return ids
+    return markets
+      .filter(m => m.clobTokenIds?.[0])
+      .map(m => m.clobTokenIds![0])
   }, [markets])
 
   // Real-time WebSocket price updates
@@ -34,11 +34,15 @@ export default function MarketsPage() {
 
   const fetchMarkets = useCallback(async () => {
     setLoading(true)
+    setError(null)
     try {
       const res = await fetch('/api/markets?limit=50')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setMarkets(data.markets ?? [])
     } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to load markets'
+      setError(msg)
       console.error('[markets] error:', e)
     } finally {
       setLoading(false)
@@ -129,6 +133,15 @@ export default function MarketsPage() {
         />
 
         <main className="flex-1 p-4 space-y-4 overflow-auto">
+          {/* Error state */}
+          {error && (
+            <div className="flex items-center gap-2 p-3 bg-loss/10 border border-loss/20 rounded-lg text-loss text-sm">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{error}</span>
+              <button onClick={fetchMarkets} className="ml-auto underline">Retry</button>
+            </div>
+          )}
+
           {/* Search & filter bar */}
           <div className="flex items-center gap-3 flex-wrap">
             <div className="relative flex-1 min-w-[200px]">
