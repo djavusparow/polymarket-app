@@ -25,12 +25,11 @@ export default function PortfolioPage() {
 
   const settings = getSettings()
 
-  // Use a ref for AbortController so we can cancel in-flight requests
+  // Refs for AbortController and Debouncing
   const abortRef = useRef<AbortController | null>(null)
-
-  // Debounce timer ref
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // ── Data Fetching Logic ─────────────────────────────────────────────────
   const fetchData = useCallback(async (isManual = false) => {
     // Cancel any in-flight request
     if (abortRef.current) {
@@ -38,11 +37,10 @@ export default function PortfolioPage() {
     }
     abortRef.current = new AbortController()
 
-    // Debounce: skip if a refresh is already scheduled within 500ms
+    // Debounce logic
     if (isManual && debounceRef.current) {
       clearTimeout(debounceRef.current)
     }
-
     if (isManual) {
       debounceRef.current = setTimeout(() => {
         debounceRef.current = null
@@ -55,13 +53,15 @@ export default function PortfolioPage() {
     try {
       const storedCreds = getCredentials()
       const headers: Record<string, string> = {}
+      
       if (storedCreds?.api_key) {
         headers['X-Clob-Creds'] = JSON.stringify({
           apiKey: storedCreds.api_key,
           apiSecret: storedCreds.api_secret,
           apiPassphrase: storedCreds.api_passphrase,
           funderAddress: storedCreds.funder_address,
-          signatureType: storedCreds.signature_type ?? 1,
+          // Perbaikan: Default signature type ke 0 (EOA) sesuai dokumentasi
+          signatureType: storedCreds.signature_type ?? 0,
         })
       }
 
@@ -77,7 +77,7 @@ export default function PortfolioPage() {
 
       console.log('[portfolio] API response:', JSON.stringify(data))
 
-      // Update state only with what the API returns
+      // Update local state dengan data terbaru
       setOpenTrades(getOpenTrades())
       setPortfolio(calculatePortfolioStats())
       setConfigured(data.configured)
@@ -97,16 +97,17 @@ export default function PortfolioPage() {
     }
   }, [])
 
-  // ── Refresh wrapper (cancellable + debounced) ──────────────────────────────
+  // ── Refresh Wrapper ──────────────────────────────────────────────────────
   const refresh = useCallback((isManual = false) => {
     fetchData(isManual)
   }, [fetchData])
 
-  // ── Auto-refresh every 15 seconds ─────────────────────────────────────────
+  // ── Auto-refresh & Cleanup ───────────────────────────────────────────────
   useEffect(() => {
     // Initial fetch
     refresh()
 
+    // Auto-refresh every 15 seconds
     const interval = setInterval(() => refresh(false), 15_000)
 
     return () => {
@@ -120,15 +121,21 @@ export default function PortfolioPage() {
     }
   }, [refresh])
 
-  // ── Close position ─────────────────────────────────────────────────────────
+  // ── Close Position Logic ─────────────────────────────────────────────────
   const closePosition = useCallback((trade: Trade) => {
+    // Perbaikan: Gunakan formula P&L yang konsisten dengan trade-engine
+    const currentPrice = trade.current_price ?? trade.entry_price
+    const shares = trade.size / trade.entry_price
+    const pnl = (currentPrice - trade.entry_price) * shares
+
     updateTrade(trade.id, {
       status: 'CLOSED',
-      exit_price: trade.current_price ?? trade.entry_price,
-      pnl: ((trade.current_price ?? trade.entry_price) - trade.entry_price) * trade.size,
+      exit_price: currentPrice,
+      pnl: pnl,
       closed_at: Date.now(),
     })
-    // Re-fetch local state after mutation — no full refresh needed
+
+    // Update UI local state
     setOpenTrades(getOpenTrades())
     setPortfolio(calculatePortfolioStats())
   }, [])
