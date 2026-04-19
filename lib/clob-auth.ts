@@ -25,7 +25,7 @@ export interface ClobCreds {
   privateKey?: string
   /** EOA address derived from privateKey — used as POLY_ADDRESS in L2 headers */
   signerAddress?: string
-  /** 0 = EOA (MetaMask), 1 = POLY_PROXY (Email/Magic). Default: 1 */
+  /** 0 = EOA (MetaMask), 1 = POLY_PROXY (Email/Magic), 2 = GNOSIS_SAFE (Multisig). Default: 0 */
   signatureType?: 0 | 1 | 2
 }
 
@@ -54,10 +54,25 @@ function decodeBase64(str: string): Uint8Array {
  * Returns lowercase 0x-prefixed address (20 bytes).
  */
 export async function deriveSignerAddress(privateKeyHex: string): Promise<string> {
+  // Perbaikan: Validasi format private key dan hex characters
+  if (!privateKeyHex) {
+    throw new Error('Private key is required')
+  }
+
+  const cleanHex = privateKeyHex.startsWith('0x') ? privateKeyHex.slice(2) : privateKeyHex
+  
+  if (cleanHex.length < 64) {
+    throw new Error('Invalid private key format: too short')
+  }
+  
+  // Validasi hex characters (0-9, a-f, A-F)
+  if (!/^[0-9a-fA-F]{64}$/.test(cleanHex)) {
+    throw new Error('Private key must be 64 hex characters')
+  }
+
   try {
     const { secp256k1 } = await import('@noble/curves/secp256k1')
-    const pkHex = privateKeyHex.startsWith('0x') ? privateKeyHex.slice(2) : privateKeyHex
-    const pubKey = secp256k1.getPublicKey(pkHex, false) // uncompressed, 65 bytes
+    const pubKey = secp256k1.getPublicKey(cleanHex, false) // uncompressed, 65 bytes
     // keccak256 of the 64-byte pubkey body (skip first byte 0x04)
     const pubKeyBytes = pubKey.slice(1)
     const { keccak_256 } = await import('@noble/hashes/sha3')
@@ -67,7 +82,7 @@ export async function deriveSignerAddress(privateKeyHex: string): Promise<string
     const addrHex = Array.from(addrBytes).map(b => b.toString(16).padStart(2, '0')).join('')
     return '0x' + addrHex
   } catch {
-    // Fallback: if noble not available, return funderAddress
+    // Fallback: if noble not available, return empty string to indicate derivation failed
     return ''
   }
 }
@@ -142,7 +157,7 @@ export async function buildClobHeaders(
  *   1. Server env vars  (set in Vercel dashboard → preferred for production)
  *   2. Client-passed creds (from Settings UI stored in localStorage)
  *
- * signatureType env var: POLYMARKET_SIGNATURE_TYPE (0 or 1, default 1)
+ * signatureType env var: POLYMARKET_SIGNATURE_TYPE (0 or 1, default 0)
  */
 export function resolveCredentials(fromClient?: Partial<ClobCreds>): ClobCreds | null {
   // Support both naming conventions — user sets whichever they configured in Vercel
@@ -168,6 +183,7 @@ export function resolveCredentials(fromClient?: Partial<ClobCreds>): ClobCreds |
   )
   const sigTypeEnv = process.env.POLYMARKET_SIGNATURE_TYPE
 
+  // Perbaikan: Default signature type ke 0 (EOA) jika tidak di-set
   if (apiKey && apiSecret && apiPassphrase && funderAddress) {
     return {
       apiKey,
@@ -175,7 +191,7 @@ export function resolveCredentials(fromClient?: Partial<ClobCreds>): ClobCreds |
       apiPassphrase,
       funderAddress,
       privateKey: privateKey ?? '',
-      signatureType: sigTypeEnv === '0' ? 0 : 1,
+      signatureType: sigTypeEnv === '1' ? 1 : 0, // Default ke EOA
     }
   }
 
@@ -185,12 +201,18 @@ export function resolveCredentials(fromClient?: Partial<ClobCreds>): ClobCreds |
     fromClient?.apiPassphrase &&
     fromClient?.funderAddress
   ) {
+    // Perbaikan: Validasi signature type dari client
+    const sigType = fromClient.signatureType ?? 0
+    if (![0, 1, 2].includes(sigType)) {
+      throw new Error('Invalid signature type. Must be 0, 1, or 2')
+    }
+
     return {
       apiKey:         fromClient.apiKey,
       apiSecret:      fromClient.apiSecret,
       apiPassphrase:  fromClient.apiPassphrase,
       funderAddress:  fromClient.funderAddress,
-      signatureType:  fromClient.signatureType ?? 1,
+      signatureType:  sigType,
     }
   }
 
