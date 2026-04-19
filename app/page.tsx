@@ -10,7 +10,6 @@ import { PortfolioStatsBar } from '@/components/portfolio-stats'
 import { getSettings, saveSettings, calculatePortfolioStats, getOpenTrades, getTrades, getCredentials } from '@/lib/trade-engine'
 import { useRealtimePrices } from '@/hooks/use-realtime-prices'
 import type { PolymarketMarket, CombinedSignal, TradingSettings, PortfolioStats } from '@/lib/types'
-import { formatVolume } from '@/lib/polymarket'
 
 export default function DashboardPage() {
   const [markets, setMarkets] = useState<PolymarketMarket[]>([])
@@ -22,9 +21,15 @@ export default function DashboardPage() {
   const [scanning, setScanning] = useState(false)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
   const [notifications, setNotifications] = useState<string[]>([])
+  
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Collect all YES/NO token IDs from loaded markets for WebSocket subscription
+  // --- WebSocket Setup (Manual Implementation) ---
+  const wsRef = useRef<WebSocket | null>(null)
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [wsConnected, setWsConnected] = useState(false)
+
+  // Collect all YES/NO token IDs from loaded markets
   const tokenIds = useMemo(() => {
     const ids: string[] = []
     for (const m of markets) {
@@ -34,8 +39,97 @@ export default function DashboardPage() {
     return ids
   }, [markets])
 
-  // Real-time WebSocket price updates (Polymarket WSS)
-  const { prices: realtimePrices, connected: wsConnected } = useRealtimePrices(tokenIds)
+  // Hook untuk real-time prices (fallback atau layer tambahan)
+  const { prices: realtimePrices } = useRealtimePrices(tokenIds)
+
+  const connectWebSocket = useCallback(() => {
+    // Pastikan tokenIds ada dan tidak kosong sebelum connect
+    if (tokenIds.length === 0) return
+
+    const wsUrl = `wss://ws-subscriptions-clob.polymarket.com/ws/market`
+    
+    // Close existing connection if any
+    if (wsRef.current) {
+      wsRef.current.close()
+    }
+
+    const ws = new WebSocket(wsUrl)
+    wsRef.current = ws
+
+    ws.onopen = () => {
+      console.log('WebSocket connected manually')
+      setWsConnected(true)
+      
+      // Subscribe message sesuai dokumentasi Polymarket
+      const subscribeMsg = {
+        type: "market",
+        assets_ids: tokenIds, // Langsung array token IDs
+        custom_feature_enabled: true // Untuk best_bid_ask events
+      }
+      ws.send(JSON.stringify(subscribeMsg))
+
+      // Setup client PING interval (10 detik) untuk keep-alive
+      // Dokumentasi: client harus mengirim PING setiap 10 detik
+      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current)
+      pingIntervalRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send('PING')
+        }
+      }, 10000)
+    }
+
+    ws.onmessage = (event) => {
+      // Handle PING dari server (server mengirim 'ping')
+      if (event.data === 'ping') {
+        ws.send('pong')
+        return
+      }
+
+      // Handle JSON messages (price updates, etc.)
+      try {
+        const data = JSON.parse(event.data)
+        console.log('WS Message:', data)
+        // Di sini Anda bisa menangani data harga yang diterima
+        // Misalnya, update state realtimePrices jika diperlukan
+      } catch (e) {
+        console.error('Error parsing WS message:', e)
+      }
+    }
+
+    ws.onclose = () => {
+      console.log('WebSocket disconnected')
+      setWsConnected(false)
+      // Hapus ping interval saat disconnect
+      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current)
+      // Reconnect logic: Retry after 1 second
+      setTimeout(() => connectWebSocket(), 1000)
+    }
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error)
+      setWsConnected(false)
+    }
+    
+    // Cleanup function untuk menghentikan reconnect loop jika komponen unmount
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close()
+      }
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current)
+      }
+    }
+  }, [tokenIds])
+
+  // Trigger koneksi ulang saat tokenIds berubah
+  useEffect(() => {
+    const cleanup = connectWebSocket()
+    return () => {
+      if (cleanup) cleanup()
+    }
+  }, [connectWebSocket])
+
+  // --- End WebSocket Setup ---
 
   // Fetch live balance from Polymarket CLOB (needs saved credentials)
   const fetchLiveBalance = useCallback(async () => {
@@ -47,7 +141,7 @@ export default function DashboardPage() {
         apiSecret:     storedCreds.api_secret,
         apiPassphrase: storedCreds.api_passphrase,
         funderAddress: storedCreds.funder_address,
-        signatureType: storedCreds.signature_type ?? 1,
+        signatureType: storedCreds.signature_type ?? 0,
       }
       const res = await fetch('/api/portfolio', {
         headers: { 'X-Clob-Creds': JSON.stringify(clobCreds) },
@@ -119,7 +213,7 @@ export default function DashboardPage() {
             apiSecret:     storedCreds.api_secret,
             apiPassphrase: storedCreds.api_passphrase,
             funderAddress: storedCreds.funder_address,
-            signatureType: storedCreds.signature_type ?? 1,
+            signatureType: storedCreds.signature_type ?? 0,
           }
         : undefined
 
@@ -191,7 +285,7 @@ export default function DashboardPage() {
       apiSecret:     storedCreds.api_secret,
       apiPassphrase: storedCreds.api_passphrase,
       funderAddress: storedCreds.funder_address,
-      signatureType: storedCreds.signature_type ?? 1,
+      signatureType: storedCreds.signature_type ?? 0,
     }
     heartbeatRef.current = setInterval(async () => {
       try {
