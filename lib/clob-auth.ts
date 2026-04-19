@@ -59,9 +59,13 @@ export async function buildClobSignature(
   path: string,
   body = ''
 ): Promise<string> {
-  const message = `${timestamp}${method}${path}${body}`
+  // Exact logic from py-clob-client/signing/hmac.py:
+  // message = timestamp + method + requestPath (+ body if present)
+  // body: replace single quotes with double quotes (same as py client)
+  const bodyStr = body ? body.replace(/'/g, '"') : ''
+  const message = `${timestamp}${method}${path}${bodyStr}`
 
-  // Polymarket API secret is base64url-encoded — decode to raw bytes for HMAC key
+  // Secret is base64url-encoded → decode to raw bytes (urlsafe_b64decode)
   const secretBytes = decodeBase64(secret)
 
   const key = await crypto.subtle.importKey(
@@ -74,8 +78,11 @@ export async function buildClobSignature(
 
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message))
 
-  // Return standard base64-encoded signature
-  return btoa(String.fromCharCode(...new Uint8Array(sig)))
+  // Output must be base64url-encoded (urlsafe_b64encode) — same as py client
+  const sigBytes = new Uint8Array(sig)
+  const base64 = btoa(String.fromCharCode(...sigBytes))
+  // Convert standard base64 to base64url
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
 /**
@@ -90,20 +97,20 @@ export async function buildClobHeaders(
   const timestamp = Math.floor(Date.now() / 1000).toString()
 
   // Polymarket CLOB signing rule:
-  // The path used for HMAC signing must be ONLY the path component (no query string).
-  // e.g. "/balance-allowance?asset_type=0" → sign only "/balance-allowance"
-  const pathForSigning = path.split('?')[0]
+  // The full path INCLUDING query string is used in the HMAC message.
+  // e.g. sign "/balance-allowance?asset_type=0" as-is
+  const signature = await buildClobSignature(creds.apiSecret, timestamp, method, path, body)
 
-  const signature = await buildClobSignature(creds.apiSecret, timestamp, method, pathForSigning, body)
-
+  // L2 headers — exact match to py-clob-client create_level_2_headers():
+  // POLY_ADDRESS, POLY_SIGNATURE, POLY_TIMESTAMP, POLY_API_KEY, POLY_PASSPHRASE
+  // NOTE: L2 does NOT include POLY_NONCE (that is L1 only)
   return {
-    'POLY_ADDRESS':     creds.funderAddress,
-    'POLY_SIGNATURE':   signature,
-    'POLY_TIMESTAMP':   timestamp,
-    'POLY_NONCE':       '0',
-    'POLY_API_KEY':     creds.apiKey,
-    'POLY_PASSPHRASE':  creds.apiPassphrase,
-    'Content-Type':     'application/json',
+    'POLY_ADDRESS':    creds.funderAddress,
+    'POLY_SIGNATURE':  signature,
+    'POLY_TIMESTAMP':  timestamp,
+    'POLY_API_KEY':    creds.apiKey,
+    'POLY_PASSPHRASE': creds.apiPassphrase,
+    'Content-Type':    'application/json',
   }
 }
 
