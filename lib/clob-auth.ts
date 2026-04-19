@@ -4,7 +4,7 @@
  * https://docs.polymarket.com/developers/CLOB/authentication
  *
  * Every authenticated request needs these headers:
- *   POLY_ADDRESS      → your EOA address
+ *   POLY_ADDRESS      → your signer wallet address (EOA)
  *   POLY_SIGNATURE    → HMAC-SHA256(timestamp + method + path + body, base64Secret)
  *   POLY_TIMESTAMP    → unix seconds
  *   POLY_API_KEY      → your api key (UUID)
