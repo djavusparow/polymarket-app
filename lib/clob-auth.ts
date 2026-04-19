@@ -24,15 +24,12 @@ export interface ClobCreds {
   funderAddress: string
   /** Private key hex for signing orders (0x...) */
   privateKey?: string
+  /** EOA address derived from privateKey — used as POLY_ADDRESS in L2 headers */
+  signerAddress?: string
   /** 0 = EOA (MetaMask), 1 = POLY_PROXY (Email/Magic). Default: 1 */
   signatureType?: 0 | 1 | 2
 }
 
-/**
- * Build HMAC-SHA256 signature for Polymarket CLOB API.
- * Message = timestamp + METHOD + requestPath + body
- * Secret must be base64-encoded (as returned by create_or_derive_api_creds).
- */
 /**
  * Decode a base64url OR standard base64 string to Uint8Array.
  * Polymarket API secrets use base64url encoding (uses - and _ instead of + and /).
@@ -49,6 +46,30 @@ function decodeBase64(str: string): Uint8Array {
   } catch {
     // Not valid base64 at all — use raw UTF-8
     return new TextEncoder().encode(str)
+  }
+}
+
+/**
+ * Derive the Ethereum EOA checksum address from a hex private key.
+ * Uses @noble/curves (secp256k1) + keccak256 via Web Crypto.
+ * Returns lowercase 0x-prefixed address (20 bytes).
+ */
+export async function deriveSignerAddress(privateKeyHex: string): Promise<string> {
+  try {
+    const { secp256k1 } = await import('@noble/curves/secp256k1')
+    const pkHex = privateKeyHex.startsWith('0x') ? privateKeyHex.slice(2) : privateKeyHex
+    const pubKey = secp256k1.getPublicKey(pkHex, false) // uncompressed, 65 bytes
+    // keccak256 of the 64-byte pubkey body (skip first byte 0x04)
+    const pubKeyBytes = pubKey.slice(1)
+    const { keccak_256 } = await import('@noble/hashes/sha3')
+    const hash = keccak_256(pubKeyBytes)
+    // Take last 20 bytes → Ethereum address
+    const addrBytes = hash.slice(-20)
+    const addrHex = Array.from(addrBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+    return '0x' + addrHex
+  } catch {
+    // Fallback: if noble not available, return funderAddress
+    return ''
   }
 }
 
@@ -102,10 +123,13 @@ export async function buildClobHeaders(
   const signature = await buildClobSignature(creds.apiSecret, timestamp, method, path, body)
 
   // L2 headers — exact match to py-clob-client create_level_2_headers():
-  // POLY_ADDRESS, POLY_SIGNATURE, POLY_TIMESTAMP, POLY_API_KEY, POLY_PASSPHRASE
-  // NOTE: L2 does NOT include POLY_NONCE (that is L1 only)
+  // POLY_ADDRESS = signer.address() = EOA address derived from private key
+  // NOT the funder/proxy address — those are different for POLY_PROXY accounts
+  const signerAddress = creds.signerAddress ||
+    (creds.privateKey ? await deriveSignerAddress(creds.privateKey) : creds.funderAddress)
+
   return {
-    'POLY_ADDRESS':    creds.funderAddress,
+    'POLY_ADDRESS':    signerAddress,
     'POLY_SIGNATURE':  signature,
     'POLY_TIMESTAMP':  timestamp,
     'POLY_API_KEY':    creds.apiKey,
