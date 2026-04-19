@@ -209,6 +209,7 @@ function buildOrderPayload(params: {
       side:         side === 'BUY' ? 0 : 1,
       signatureType,
       signature,
+      orderType:    'GTC', // Added GTC order type as requested
     },
     orderType: 'GTC',
   }
@@ -286,6 +287,17 @@ export async function POST(request: Request) {
 
     const dec      = Math.max(0, -Math.floor(Math.log10(tickSize)))
     const clamped  = Math.max(tickSize, Math.min(parseFloat(Number(price).toFixed(dec)), 1 - tickSize))
+    
+    // Price validation: ensure price is strictly between 0 and 1
+    if (clamped <= 0 || clamped >= 1) {
+      return NextResponse.json({ error: 'Price must be between 0 and 1' }, { status: 400 })
+    }
+
+    // Size validation: ensure size is greater than 0
+    if (size <= 0) {
+      return NextResponse.json({ error: 'Size must be greater than 0' }, { status: 400 })
+    }
+
     const sigType  = creds.signatureType ?? 1
 
     // Build and sign order
@@ -309,6 +321,12 @@ export async function POST(request: Request) {
     if (!orderRes.ok) {
       const errMsg = orderData?.error ?? orderData?.message ?? orderData?.errorMsg ?? `CLOB error ${orderRes.status}`
       console.log('[api/execute] CLOB rejected:', orderRes.status, errMsg)
+      
+      // Specific error handling for CLOB error codes
+      if (errMsg.includes('insufficient balance')) {
+        return NextResponse.json({ error: 'Insufficient USDC balance' }, { status: 400 })
+      }
+      
       return NextResponse.json({ error: errMsg }, { status: orderRes.status })
     }
 
