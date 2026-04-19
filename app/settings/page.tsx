@@ -234,7 +234,7 @@ python3 -c "
 from py_clob_client.client import ClobClient
 c = ClobClient('https://clob.polymarket.com',
   key='0xYOUR_PRIVATE_KEY', chain_id=137,
-  signature_type=1,  # 1=Email/Magic, 0=MetaMask
+  signature_type=0,  # 1=Email/Magic, 0=MetaMask, 2=GNOSIS_SAFE
   funder='0xYOUR_FUNDER_ADDRESS')
 r = c.create_or_derive_api_creds()
 print('API Key:', r.api_key)
@@ -380,7 +380,7 @@ print('Pass   :', r.api_passphrase)
                   { key: 'POLYMARKET_API_SECRET',       desc: 'CLOB API secret (base64) for HMAC-SHA256 signing' },
                   { key: 'POLYMARKET_API_PASSPHRASE',   desc: 'CLOB API passphrase from create_or_derive_api_creds()' },
                   { key: 'POLYMARKET_FUNDER_ADDRESS',   desc: 'Your proxy wallet address from polymarket.com/settings' },
-                  { key: 'POLYMARKET_SIGNATURE_TYPE',   desc: '0 = EOA (MetaMask) | 1 = POLY_PROXY (Email/Magic) | 2 = GNOSIS_SAFE [default: 1]' },
+                  { key: 'POLYMARKET_SIGNATURE_TYPE',   desc: '0 = EOA (MetaMask) | 1 = POLY_PROXY (Email/Magic) | 2 = GNOSIS_SAFE [default: 0]' },
                 ].map(env => (
                   <div key={env.key} className="flex items-start gap-3 text-xs">
                     <code className="font-mono text-primary bg-secondary px-2 py-0.5 rounded whitespace-nowrap shrink-0">
