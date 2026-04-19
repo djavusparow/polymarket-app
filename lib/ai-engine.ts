@@ -86,6 +86,9 @@ async function callAI(
   marketContext: string,
   model = 'openrouter/claude-sonnet-4'
 ): Promise<Record<string, unknown> | null> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
+
   try {
     const res = await fetch(LLM_ENDPOINT, {
       method: 'POST',
@@ -99,7 +102,11 @@ async function callAI(
         temperature: 0.3,
         max_tokens: 150,
       }),
+      signal: controller.signal,
     })
+    
+    clearTimeout(timeoutId)
+
     if (!res.ok) {
       const errText = await res.text()
       console.log('[ai-engine] API error:', res.status, errText.slice(0, 200))
@@ -109,9 +116,26 @@ async function callAI(
     const content = data?.choices?.[0]?.message?.content ?? ''
     // Strip markdown code fences if present
     const clean = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-    return JSON.parse(clean)
+    
+    // Robust JSON parsing with validation
+    try {
+      const parsed = JSON.parse(clean)
+      // Validate structure
+      if (!parsed.signal || typeof parsed.confidence !== 'number') {
+        throw new Error('Invalid AI response structure: missing signal or confidence')
+      }
+      return parsed
+    } catch (parseError) {
+      console.error('[ai-engine] JSON parse error:', parseError, 'Raw content:', clean)
+      return null
+    }
   } catch (e) {
-    console.error('[ai-engine] callAI error:', e)
+    clearTimeout(timeoutId)
+    if (e.name === 'AbortError') {
+      console.error('[ai-engine] API call timed out')
+    } else {
+      console.error('[ai-engine] callAI error:', e)
+    }
     return null
   }
 }
@@ -214,7 +238,6 @@ export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedS
     callAI(SENTIMENT_ANALYST_PROMPT, context),
   ])
 
-  // All 3 calls use openrouter/claude-sonnet-4 via the unified endpoint.
   // Each is assigned a distinct role label so the UI shows which "analyst" produced it.
   const modelResults: Array<{ raw: Record<string, unknown> | null; model: AIModel }> = [
     { raw: analystResult,   model: 'claude-sonnet' },  // Market Analyst role
@@ -258,15 +281,21 @@ export async function analyzeMarketsBatch(
 ): Promise<CombinedSignal[]> {
   const signals: CombinedSignal[] = []
   const CONCURRENCY = 3
+  let retryCount = 0
 
   for (let i = 0; i < markets.length; i += CONCURRENCY) {
     const batch = markets.slice(i, i + CONCURRENCY)
     const results = await Promise.all(batch.map(m => analyzeMarket(m)))
     signals.push(...results)
     onProgress?.(Math.min(i + CONCURRENCY, markets.length), markets.length)
-    // Small delay to avoid rate limits
+    
+    // Small delay with exponential backoff to avoid rate limits
     if (i + CONCURRENCY < markets.length) {
-      await new Promise(r => setTimeout(r, 800))
+      const delay = Math.min(800 * Math.pow(1.5, retryCount), 5000)
+      await new Promise(r => setTimeout(r, delay))
+      retryCount++
+    } else {
+      retryCount = 0 // Reset retry count for next batch
     }
   }
 
