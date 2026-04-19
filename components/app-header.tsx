@@ -38,7 +38,10 @@ export function AppHeader({
 
       {/* Stats row */}
       <div className="hidden md:flex items-center gap-4">
-        <StatChip label="Balance" value={`$${balance.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
+        <StatChip 
+          label="Balance (USDC)" 
+          value={`$${balance.toLocaleString('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} 
+        />
         <StatChip
           label="Total P&L"
           value={`${pnlPositive ? '+' : ''}$${totalPnL.toFixed(2)}`}
