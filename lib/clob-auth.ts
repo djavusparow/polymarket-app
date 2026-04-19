@@ -33,6 +33,25 @@ export interface ClobCreds {
  * Message = timestamp + METHOD + requestPath + body
  * Secret must be base64-encoded (as returned by create_or_derive_api_creds).
  */
+/**
+ * Decode a base64url OR standard base64 string to Uint8Array.
+ * Polymarket API secrets use base64url encoding (uses - and _ instead of + and /).
+ */
+function decodeBase64(str: string): Uint8Array {
+  // Convert base64url to standard base64
+  const base64 = str
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .padEnd(str.length + (4 - (str.length % 4)) % 4, '=')
+  try {
+    const binary = atob(base64)
+    return Uint8Array.from(binary, c => c.charCodeAt(0))
+  } catch {
+    // Not valid base64 at all — use raw UTF-8
+    return new TextEncoder().encode(str)
+  }
+}
+
 export async function buildClobSignature(
   secret: string,
   timestamp: string,
@@ -42,24 +61,8 @@ export async function buildClobSignature(
 ): Promise<string> {
   const message = `${timestamp}${method}${path}${body}`
 
-  // Polymarket API secret may be base64-encoded OR raw string depending on account type.
-  // Try base64 decode first; if it fails or looks like plain text, use raw UTF-8 bytes.
-  let secretBytes: Uint8Array
-  try {
-    const decoded = atob(secret)
-    // Sanity check: valid base64 decode typically produces non-printable bytes
-    // If all chars are printable ASCII it might just be a plain string — use raw
-    const nonPrintable = decoded.split('').some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) > 126)
-    if (nonPrintable || decoded.length !== secret.length * 0.75) {
-      secretBytes = Uint8Array.from(decoded, c => c.charCodeAt(0))
-    } else {
-      // Looks like the decoded result is still plain text → use raw UTF-8
-      secretBytes = new TextEncoder().encode(secret)
-    }
-  } catch {
-    // atob failed → secret is not base64, use raw UTF-8
-    secretBytes = new TextEncoder().encode(secret)
-  }
+  // Polymarket API secret is base64url-encoded — decode to raw bytes for HMAC key
+  const secretBytes = decodeBase64(secret)
 
   const key = await crypto.subtle.importKey(
     'raw',
@@ -71,7 +74,7 @@ export async function buildClobSignature(
 
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message))
 
-  // Return base64-encoded signature
+  // Return standard base64-encoded signature
   return btoa(String.fromCharCode(...new Uint8Array(sig)))
 }
 
