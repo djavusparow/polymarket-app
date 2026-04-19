@@ -385,7 +385,6 @@ export function updateTradeWithPrice(
   const pnl = (newPrice - trade.entry_price) * shares
   const pnl_pct = ((newPrice - trade.entry_price) / trade.entry_price) * 100
 
-  // Determine new status
   const newStatus = (() => {
     if (
       (trade.side === 'YES' && newPrice <= trade.stop_loss) ||
@@ -402,26 +401,12 @@ export function updateTradeWithPrice(
     return trade.status
   })()
 
-  // Apply updates: if status changes to STOP_LOSS or TAKE_PROFIT, record exit details
-  if (newStatus !== trade.status && ['STOP_LOSS', 'TAKE_PROFIT'].includes(newStatus)) {
-    trades[idx] = {
-      ...trade,
-      current_price: newPrice,
-      exit_price: newPrice,
-      closed_at: Date.now(),
-      pnl,
-      pnl_pct,
-      status: newStatus,
-    }
-  } else {
-    trades[idx] = {
-      ...trade,
-      current_price: newPrice,
-      pnl,
-      pnl_pct,
-      status: newStatus,
-    }
+  trades[idx] = {
+    ...trade,
+    current_price: newPrice,
+    pnl,
+    pnl_pct,
+    status: newStatus,
   }
-
   saveTrades(trades)
 }
