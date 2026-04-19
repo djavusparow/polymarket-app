@@ -27,6 +27,7 @@ export function useRealtimePrices(tokenIds: string[]) {
   const [connected, setConnected] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const retriesRef = useRef(0)
   const activeTokensRef = useRef<string[]>([])
 
@@ -49,12 +50,26 @@ export function useRealtimePrices(tokenIds: string[]) {
       setConnected(true)
       retriesRef.current = 0
       subscribe(ws, activeTokensRef.current)
+      
+      // Start heartbeat every 10 seconds to keep connection alive
+      if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current)
+      heartbeatIntervalRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send('ping')
+        }
+      }, 10000)
     }
 
     ws.onmessage = (evt) => {
       try {
         const msg = JSON.parse(evt.data as string)
         const now = Date.now()
+
+        // Handle server ping (respond with pong)
+        if (msg === 'ping') {
+          ws.send('pong')
+          return
+        }
 
         if (msg.event_type === 'best_bid_ask') {
           const tokenId: string = msg.asset_id
@@ -120,6 +135,11 @@ export function useRealtimePrices(tokenIds: string[]) {
     ws.onclose = () => {
       setConnected(false)
       wsRef.current = null
+      // Clear heartbeat when disconnect
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current)
+        heartbeatIntervalRef.current = null
+      }
       // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
       const delay = Math.min(1000 * Math.pow(2, retriesRef.current), 30_000)
       retriesRef.current += 1
@@ -150,6 +170,7 @@ export function useRealtimePrices(tokenIds: string[]) {
 
     return () => {
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
+      if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current)
       if (wsRef.current) {
         wsRef.current.onclose = null
         wsRef.current.close()
