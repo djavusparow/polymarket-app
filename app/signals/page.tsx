@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
-import { BrainCircuit, TrendingUp, TrendingDown, Activity, Filter } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { BrainCircuit, TrendingUp, TrendingDown, Activity, Filter, Loader2, RefreshCw, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AppSidebar } from '@/components/app-sidebar'
 import { AppHeader } from '@/components/app-header'
@@ -9,6 +9,12 @@ import { getSettings, calculatePortfolioStats, addTrade, getCredentials } from '
 import type { CombinedSignal, PolymarketMarket, TradingSettings } from '@/lib/types'
 
 type FilterType = 'all' | 'high' | 'buy' | 'sell'
+
+// Type definition for API response
+interface AnalyzeResponse {
+  signal?: CombinedSignal
+  error?: string
+}
 
 export default function SignalsPage() {
   const [markets, setMarkets] = useState<PolymarketMarket[]>([])
@@ -18,53 +24,153 @@ export default function SignalsPage() {
   const [filter, setFilter] = useState<FilterType>('all')
   const [selected, setSelected] = useState<CombinedSignal | null>(null)
   const [executingId, setExecutingId] = useState<string | null>(null)
+  const [retryCount, setRetryCount] = useState(0)
+  const [lastError, setLastError] = useState<string | null>(null)
+  
+  // Track individual market analysis status
+  const [analyzingMarkets, setAnalyzingMarkets] = useState<Set<string>>(new Set())
+
   const settings = getSettings()
   const portfolio = calculatePortfolioStats()
+
+  // Rate limiting delay: 500ms for better performance while respecting API limits
+  const RATE_LIMIT_DELAY = 500
+
+  // Signature type validation helper
+  const validateSignatureType = (type: number): boolean => {
+    return [0, 1, 2].includes(type) // EOA, POLY_PROXY, GNOSIS_SAFE
+  }
+
+  // Analyze with Retry (Handles 425 Engine Restart)
+  const analyzeWithRetry = useCallback(async (market: PolymarketMarket): Promise<AnalyzeResponse | null> => {
+    const MAX_RETRIES = 10
+    let delay = 1000
+    
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        const response = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ market }),
+        })
+        
+        if (response.status === 425) {
+          console.log(`Engine restarting, retrying in ${delay/1000}s... (Attempt ${attempt + 1})`)
+          await new Promise(r => setTimeout(r, delay))
+          delay = Math.min(delay * 2, 30000) // Exponential backoff up to 30s
+          continue
+        }
+        
+        if (!response.ok) {
+          console.warn(`API Error: ${response.status}`)
+          return null
+        }
+        
+        return await response.json()
+      } catch (error) {
+        console.warn(`Network error during analysis:`, error)
+        // Wait before retrying on network error
+        await new Promise(r => setTimeout(r, delay))
+      }
+    }
+    
+    console.error('Engine restart exceeded maximum retry attempts')
+    return null
+  }, [])
 
   const fetchAndScan = useCallback(async () => {
     setScanning(true)
     setProgress(0)
     setSignals([])
+    setAnalyzingMarkets(new Set())
+    setLastError(null)
 
-    // Fetch top markets
-    const res = await fetch('/api/markets?type=top&limit=15')
-    const { markets: mData } = await res.json()
-    setMarkets(mData ?? [])
+    try {
+      const res = await fetch('/api/markets?type=top&limit=15')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      
+      const { markets: mData } = await res.json()
+      const validMarkets = mData ?? []
+      setMarkets(validMarkets)
 
-    // Analyze each
-    for (let i = 0; i < (mData?.length ?? 0); i++) {
-      const market = mData[i]
-      setProgress(Math.round(((i + 1) / mData.length) * 100))
-      try {
-        const r = await fetch('/api/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ market }),
-        })
-        const d = await r.json()
-        if (d.signal) {
-          setSignals(prev => [...prev, d.signal].sort((a, b) => b.confidence - a.confidence))
+      // Analyze each market with better error handling and rate limiting
+      for (let i = 0; i < validMarkets.length; i++) {
+        const market = validMarkets[i]
+        setProgress(Math.round(((i + 1) / validMarkets.length) * 100))
+        setAnalyzingMarkets(prev => new Set([...prev, market.id]))
+
+        const result = await analyzeWithRetry(market)
+        
+        if (result?.signal) {
+          setSignals(prev => [...prev, result.signal!].sort((a, b) => b.confidence - a.confidence))
         }
-      } catch {}
-      await new Promise(r => setTimeout(r, 500))
-    }
-    setScanning(false)
-  }, [])
 
-  useEffect(() => { fetchAndScan() }, [fetchAndScan])
+        // Remove from analyzing set
+        setAnalyzingMarkets(prev => {
+          const next = new Set(prev)
+          next.delete(market.id)
+          return next
+        })
+
+        // Rate limiting delay
+        await new Promise(r => setTimeout(r, RATE_LIMIT_DELAY))
+      }
+      
+      // Reset retry count on success
+      setRetryCount(0)
+    } catch (error: unknown) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+      setLastError(errorMsg)
+      console.error('Failed to fetch markets:', errorMsg)
+    } finally {
+      setScanning(false)
+    }
+  }, [analyzeWithRetry, RATE_LIMIT_DELAY])
+
+  // Exponential backoff retry logic for UI
+  const handleRetry = useCallback(() => {
+    const delay = Math.min(1000 * Math.pow(2, retryCount), 30000)
+    console.log(`Retrying in ${delay}ms... (Attempt ${retryCount + 1})`)
+    setTimeout(() => {
+      setRetryCount(prev => prev + 1)
+      fetchAndScan()
+    }, delay)
+  }, [retryCount, fetchAndScan])
+
+  // Initial fetch and cleanup on unmount
+  useEffect(() => {
+    fetchAndScan()
+
+    return () => {
+      // Cleanup to prevent memory leaks
+      setAnalyzingMarkets(new Set())
+      setSignals([])
+    }
+  }, [fetchAndScan])
 
   const executeSignal = async (signal: CombinedSignal) => {
-    setExecutingId(signal.market_id)
     const storedCreds = getCredentials()
-    const clobCreds = storedCreds?.api_key
-      ? {
-          apiKey:        storedCreds.api_key,
-          apiSecret:     storedCreds.api_secret,
-          apiPassphrase: storedCreds.api_passphrase,
-          funderAddress: storedCreds.funder_address,
-          signatureType: storedCreds.signature_type ?? 1,
-        }
-      : undefined
+    
+    // Null safety: Validate complete credentials before execution
+    if (!storedCreds?.api_key || !storedCreds?.api_secret || !storedCreds?.funder_address) {
+      alert('Please configure complete API credentials in Settings first')
+      return
+    }
+
+    // Validate signature type
+    if (!validateSignatureType(storedCreds.signature_type ?? 1)) {
+       alert('Invalid signature type configured. Please check Settings.')
+       return
+    }
+
+    setExecutingId(signal.market_id)
+    const clobCreds = {
+      apiKey:        storedCreds.api_key,
+      apiSecret:     storedCreds.api_secret,
+      apiPassphrase: storedCreds.api_passphrase,
+      funderAddress: storedCreds.funder_address,
+      signatureType: storedCreds.signature_type ?? 1,
+    }
 
     try {
       const res = await fetch('/api/trade/execute', {
@@ -115,12 +221,15 @@ export default function SignalsPage() {
     }
   }
 
-  const filtered = signals.filter(s => {
-    if (filter === 'high') return s.confidence >= 75
-    if (filter === 'buy') return s.direction === 'BUY'
-    if (filter === 'sell') return s.direction === 'SELL'
-    return true
-  })
+  // Memoize filtered signals for performance
+  const filtered = useMemo(() => {
+    return signals.filter(s => {
+      if (filter === 'high') return s.confidence >= 75
+      if (filter === 'buy') return s.direction === 'BUY'
+      if (filter === 'sell') return s.direction === 'SELL'
+      return true
+    })
+  }, [signals, filter])
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -152,6 +261,19 @@ export default function SignalsPage() {
                 />
               </div>
             </div>
+          )}
+
+          {/* Error / Retry State */}
+          {lastError && !scanning && (
+             <div className="p-4 bg-loss/10 border border-loss/20 rounded-lg flex items-center justify-between">
+               <div className="flex items-center gap-2 text-loss text-sm">
+                 <AlertCircle className="w-4 h-4" />
+                 <span>{lastError}</span>
+               </div>
+               <button onClick={handleRetry} className="flex items-center gap-1 px-3 py-1 bg-secondary border border-border rounded text-xs hover:bg-primary/10 transition">
+                 <RefreshCw className="w-3 h-3" /> Retry ({retryCount})
+               </button>
+             </div>
           )}
 
           {/* Signal summary */}
@@ -197,6 +319,7 @@ export default function SignalsPage() {
                   key={signal.market_id}
                   signal={signal}
                   selected={selected?.market_id === signal.market_id}
+                  isAnalyzing={analyzingMarkets.has(signal.market_id)}
                   onSelect={() => setSelected(selected?.market_id === signal.market_id ? null : signal)}
                   onExecute={() => executeSignal(signal)}
                   executing={executingId === signal.market_id}
@@ -237,6 +360,7 @@ export default function SignalsPage() {
 function SignalCard({
   signal,
   selected,
+  isAnalyzing,
   onSelect,
   onExecute,
   executing,
@@ -244,6 +368,7 @@ function SignalCard({
 }: {
   signal: CombinedSignal
   selected: boolean
+  isAnalyzing: boolean
   onSelect: () => void
   onExecute: () => void
   executing: boolean
@@ -263,15 +388,21 @@ function SignalCard({
       )}
     >
       <div className="flex items-start gap-3">
-        {/* Direction icon */}
+        {/* Direction icon / Analyzing loader */}
         <div className={cn(
           'mt-0.5 w-7 h-7 rounded flex items-center justify-center shrink-0',
           signal.direction === 'BUY' ? 'bg-profit/15' :
           signal.direction === 'SELL' ? 'bg-loss/15' : 'bg-secondary'
         )}>
-          {signal.direction === 'BUY' ? <TrendingUp className="w-4 h-4 text-profit" /> :
-           signal.direction === 'SELL' ? <TrendingDown className="w-4 h-4 text-loss" /> :
-           <Activity className="w-4 h-4 text-muted-foreground" />}
+          {isAnalyzing ? (
+            <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+          ) : signal.direction === 'BUY' ? (
+            <TrendingUp className="w-4 h-4 text-profit" />
+          ) : signal.direction === 'SELL' ? (
+            <TrendingDown className="w-4 h-4 text-loss" />
+          ) : (
+            <Activity className="w-4 h-4 text-muted-foreground" />
+          )}
         </div>
 
         <div className="flex-1 min-w-0">
