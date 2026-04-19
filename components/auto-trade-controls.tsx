@@ -9,9 +9,11 @@ import { DEFAULT_SETTINGS } from '@/lib/trade-engine'
 interface AutoTradeControlsProps {
   settings: TradingSettings
   onSave: (settings: TradingSettings) => void
+  /** Optional market minimum order size for validation */
+  minimumOrderSize?: number
 }
 
-export function AutoTradeControls({ settings, onSave }: AutoTradeControlsProps) {
+export function AutoTradeControls({ settings, onSave, minimumOrderSize }: AutoTradeControlsProps) {
   const [local, setLocal] = useState<TradingSettings>(settings)
   const [saved, setSaved] = useState(false)
 
@@ -25,6 +27,9 @@ export function AutoTradeControls({ settings, onSave }: AutoTradeControlsProps) 
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
+
+  // Calculate effective minimum based on market requirements and user settings
+  const effectiveMinSize = Math.max(minimumOrderSize ?? 1, local.min_trade_size)
 
   return (
     <div className="bg-card border border-border rounded-lg overflow-hidden">
@@ -80,7 +85,7 @@ export function AutoTradeControls({ settings, onSave }: AutoTradeControlsProps) 
             <NumberField
               label="Minimum Size"
               value={local.min_trade_size}
-              min={1}
+              min={Math.max(1, minimumOrderSize ?? 1)} // Respects market minimum_order_size
               max={local.max_trade_size}
               prefix="$"
               onChange={v => update('min_trade_size', v)}
@@ -88,7 +93,7 @@ export function AutoTradeControls({ settings, onSave }: AutoTradeControlsProps) 
             <NumberField
               label="Maximum Size"
               value={local.max_trade_size}
-              min={local.min_trade_size}
+              min={effectiveMinSize}
               max={10000}
               prefix="$"
               onChange={v => update('max_trade_size', v)}
@@ -164,6 +169,11 @@ export function AutoTradeControls({ settings, onSave }: AutoTradeControlsProps) 
           <p className="text-xs text-muted-foreground leading-relaxed">
             Trade size scales linearly between min and max based on AI confidence.
             At {local.min_confidence}% confidence, minimum size is used. At 95%+, maximum size is used.
+            {minimumOrderSize !== undefined && (
+              <span className="block mt-1 text-primary/70">
+                Market minimum order size: ${minimumOrderSize.toFixed(2)}
+              </span>
+            )}
           </p>
         </div>
 
