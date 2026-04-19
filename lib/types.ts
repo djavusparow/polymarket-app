@@ -97,7 +97,18 @@ export interface CombinedSignal {
 
 // ─── Trade Types ──────────────────────────────────────────────────────────────
 
-export type TradeStatus = 'PENDING' | 'OPEN' | 'CLOSED' | 'CANCELLED' | 'STOP_LOSS' | 'TAKE_PROFIT'
+export type TradeStatus = 
+  | 'PENDING' 
+  | 'OPEN' 
+  | 'CLOSED' 
+  | 'CANCELLED' 
+  | 'STOP_LOSS' 
+  | 'TAKE_PROFIT'
+  | 'MATCHED'   // CLOB API status
+  | 'MINED'     // CLOB API status
+  | 'CONFIRMED' // CLOB API status
+  | 'RETRYING'  // CLOB API status
+  | 'FAILED'    // CLOB API status
 
 export type TradeSide = 'YES' | 'NO'
 
@@ -116,7 +127,7 @@ export interface Trade {
   take_profit?: number
   pnl?: number
   pnl_pct?: number
-  status: TradeStatus
+  status: TradeStatus  // Now accepts all CLOB statuses
   signal_confidence: number
   ai_rationale: string
   order_id?: string
