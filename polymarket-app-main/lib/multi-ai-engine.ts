@@ -1,5 +1,5 @@
-import { parseOutcomePrice } from './polymarket.js'
-import type { CombinedSignal, AIAnalysis, PolymarketMarket } from './types.js'
+import { parseOutcomePrice } from './polymarket'
+import type { CombinedSignal, AIAnalysis, PolymarketMarket } from './types'
 
 // Multi-AI Ensemble: 5+ engines parallel
 const ENGINES = [
@@ -10,7 +10,9 @@ const ENGINES = [
 ]
 
 export async function analyzeWithMultiAI(market: PolymarketMarket): Promise<CombinedSignal> {
-  const context = buildMarketContext(market)
+// Mock context for demo (add buildMarketContext from ai-engine)
+  const yesPrice = parseOutcomePrice(market.outcomePrices)
+  const context = `Question: ${market.question} Price: ${(yesPrice*100).toFixed(1)}%`;
   const yesPrice = parseOutcomePrice(market.outcomePrices)
   
   // Parallel AI calls + news sentiment
