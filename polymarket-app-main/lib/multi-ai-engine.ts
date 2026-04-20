@@ -1,5 +1,18 @@
-import { parseOutcomePrice } from './polymarket'
-import type { CombinedSignal, AIAnalysis, PolymarketMarket } from './types'
+// Standalone multi-AI - no external deps for deploy
+// parseOutcomePrice moved inline
+interface PolymarketMarket {
+  question: string
+  outcomePrices?: string | string[]
+}
+
+interface CombinedSignal {
+  market_id: string
+  question: string
+  direction: string
+  confidence: number
+  analyses: any[]
+  yesPrice: number
+}
 
 // Multi-AI Ensemble: 5+ engines parallel
 const ENGINES = [
