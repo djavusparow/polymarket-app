@@ -77,45 +77,44 @@ export function MarketCard({ market, signal, onAnalyze, analyzing, onExecute, re
         </div>
 
         {/* AI Confidence meter (if signal) */}
-        {signal && (
-          <div className="mb-3">
-            <div className="flex items-center justify-between text-xs mb-1">
-              <span className="text-muted-foreground">AI Confidence</span>
-              <span className={cn(
-                'font-mono font-semibold',
-                signal.confidence >= 80 ? 'text-profit' :
-                signal.confidence >= 65 ? 'text-chart-4' : 'text-muted-foreground'
-              )}>{signal.confidence}%</span>
-            </div>
-            <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-              <div
-                className={cn(
-                  'h-full rounded-full transition-all duration-500',
-                  signal.confidence >= 80 ? 'bg-profit' :
-                  signal.confidence >= 65 ? 'bg-chart-4' : 'bg-primary'
-                )}
-                style={{ width: `${signal.confidence}%` }}
-              />
-            </div>
-            {/* AI models breakdown */}
-            {expanded && signal.analyses.length > 0 && (
-              <div className="mt-3 space-y-2">
-                {signal.analyses.map((a, i) => (
-                  <div key={i} className="bg-secondary/50 rounded p-2">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs font-mono text-primary">{a.model}</span>
-                      <div className="flex items-center gap-1.5">
-                        <SignalIcon direction={a.signal} size="xs" />
-                        <span className="text-xs text-muted-foreground">{a.confidence}%</span>
-                      </div>
+{signal && (
+            <div className="mb-4 p-3 bg-gradient-to-r from-primary/5 to-secondary rounded-lg border border-primary/20">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-primary">AI Analysis</span>
+                <span className="text-xs font-mono">{signal.analyses.length} Models</span>
+              </div>
+              {/* Confidence meter */}
+              <div className="mb-2">
+                <div className="flex items-center justify-between text-xs mb-1">
+                  <span>Confidence</span>
+                  <span className={cn('font-bold',
+                    signal.confidence >= 80 ? 'text-profit' :
+                    signal.confidence >= 65 ? 'text-warning' : 'text-muted-foreground'
+                  )}>{signal.confidence}%</span>
+                </div>
+                <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-primary to-blue-500 rounded-full transition-all" 
+                       style={{ width: `${signal.confidence}%` }} />
+                </div>
+              </div>
+              {/* Model votes */}
+              <div className="space-y-1.5">
+                {signal.analyses.map((analysis, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs">
+                    <span className="font-mono opacity-80">{analysis.model.slice(0,8)}</span>
+                    <div className="flex items-center gap-1">
+                      <div className={`w-1.5 h-1.5 rounded-full ${analysis.signal === 'BUY' ? 'bg-profit' : analysis.signal === 'SELL' ? 'bg-loss' : 'bg-muted'}`} />
+                      <span>{analysis.confidence}%</span>
                     </div>
-                    <p className="text-xs text-muted-foreground leading-relaxed">{a.rationale}</p>
                   </div>
                 ))}
               </div>
-            )}
-          </div>
-        )}
+              {/* Quick rationale */}
+              <div className="mt-2 pt-2 border-t border-muted/30">
+                <p className="text-xs leading-tight opacity-90">{signal.analyses[0]?.rationale || 'Analyzing...'}</p>
+              </div>
+            </div>
+          )}
 
         {/* Actions */}
         <div className="flex items-center gap-2">
