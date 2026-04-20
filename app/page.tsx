@@ -23,6 +23,7 @@ export default function DashboardPage() {
   const [notifications, setNotifications] = useState<string[]>([])
   
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const autoScanInterval = useRef<NodeJS.Timeout | null>(null)
 
   // --- WebSocket Setup (Manual Implementation) ---
   const wsRef = useRef<WebSocket | null>(null)
