@@ -31,7 +31,7 @@ export async function fetchTopVolumeMarkets(limit = 20): Promise<PolymarketMarke
       active: 'true',
       closed: 'false',
       limit: String(limit),
-      order: 'volume_24hr',
+      order: 'volume24hr',
       ascending: 'false',
     })
     const res = await fetch(`${GAMMA_API}/markets?${params}`, { cache: 'no-store' })
