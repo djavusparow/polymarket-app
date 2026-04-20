@@ -5,9 +5,8 @@ import { fetchMidpointPrices, fetchLastTradePrices } from '@/lib/polymarket'
  * POST /api/prices
  * Body: { tokens: string[] }
  *
- * Fetches real-time midpoint and last trade prices for given token IDs
- * from the Polymarket CLOB (public, no auth required).
- * Uses POST for batch requests to send token IDs in the body.
+ * Mengambil midpoint dan last trade prices untuk token IDs yang diberikan
+ * dari Polymarket CLOB (public, no auth required).
  */
 export async function POST(request: Request) {
   try {
@@ -15,15 +14,20 @@ export async function POST(request: Request) {
     const tokenIds = Array.isArray(body.tokens) ? body.tokens : []
 
     if (tokenIds.length === 0) {
-      return NextResponse.json({ error: 'No token IDs provided' }, { status: 400 })
+      return NextResponse.json(
+        { error: 'No token IDs provided' },
+        { status: 400 }
+      )
     }
 
-    // Validate maximum token IDs based on API limits
     if (tokenIds.length > 500) {
-      return NextResponse.json({ error: 'Maximum 500 token IDs allowed' }, { status: 400 })
+      return NextResponse.json(
+        { error: 'Maximum 500 token IDs allowed' },
+        { status: 400 }
+      )
     }
 
-    // Fetch prices in parallel
+    // Ambil harga secara paralel
     const [midpoints, lastTrades] = await Promise.all([
       fetchMidpointPrices(tokenIds),
       fetchLastTradePrices(tokenIds),
@@ -40,6 +44,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ prices, timestamp: Date.now() })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error'
+    console.error('[/api/prices]', msg)
     return NextResponse.json({ error: msg }, { status: 500 })
   }
 }
