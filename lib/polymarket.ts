@@ -1,9 +1,9 @@
 import type { PolymarketMarket, MarketPrice } from './types'
 
 // URL Constants (Production Endpoints)
-const GAMMA_API  = 'Gamma API'
-const CLOB_API   = 'CLOB API'
-const DATA_API   = 'Data API'
+const GAMMA_API = 'https://api.polymarket.com/v2/gamma/markets';
+const CLOB_API   = 'https://clob.polymarket.com/midpoints';
+const DATA_API   = 'https://data.polymarket.com/v2/positions';
 
 // ─── Public Market Data (Gamma API — no auth) ─────────────────────────────────
 
@@ -91,7 +91,7 @@ export async function fetchMidpointPrices(
 ): Promise<Record<string, number>> {
   if (tokenIds.length === 0) return {}
 
-  const res = await fetch('https://clob.polymarket.com/midpoints', {
+  const res = await fetch('${CLOB_API}/midpoints', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(tokenIds.map((id) => ({ token_id: id }))),
@@ -118,7 +118,7 @@ export async function fetchLastTradePrices(
 ): Promise<Record<string, number>> {
   if (tokenIds.length === 0) return {}
 
-  const res = await fetch('https://clob.polymarket.com/last-trades-prices', {
+  const res = await fetch('${CLOB_API}/last-trades-prices', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(tokenIds.map((id) => ({ token_id: id }))),
