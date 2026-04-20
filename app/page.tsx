@@ -169,6 +169,10 @@ export default function DashboardPage() {
   }, [])
 
   const runAIScan = useCallback(async () => {
+    // Auto-scan interval (user can trigger manual too)
+    if (!autoScanInterval.current) {
+      autoScanInterval.current = setInterval(runAIScan, 10000)
+    }
     if (!markets.length || scanning) return
     setScanning(true)
     setScanProgress(0)

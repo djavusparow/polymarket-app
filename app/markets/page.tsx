@@ -49,7 +49,20 @@ export default function MarketsPage() {
     }
   }, [])
 
-  useEffect(() => { fetchMarkets() }, [fetchMarkets])
+  // Auto-refresh markets + auto-analyze every 8 seconds
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      await fetchMarkets()
+      // Auto-analyze top 10 markets every cycle
+      const topMarkets = markets.slice(0, 10)
+      for (const market of topMarkets) {
+        if (!signals[market.id]) {
+          await analyzeMarket(market)
+        }
+      }
+    }, 8000)
+    return () => clearInterval(interval)
+  }, [fetchMarkets])
 
   const analyzeMarket = async (market: PolymarketMarket) => {
     setAnalyzingId(market.id)
