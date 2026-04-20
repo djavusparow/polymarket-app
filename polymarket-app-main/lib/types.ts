@@ -51,7 +51,7 @@ export interface CombinedSignal {
   yesPrice: number
   noPrice: number
   recommendedSide: 'YES' | 'NO'
-  timestamp: Date.now(),
+  timestamp: number
 }
 
 export interface Trade {
