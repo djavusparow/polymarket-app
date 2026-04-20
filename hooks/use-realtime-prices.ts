@@ -14,13 +14,6 @@ export interface RealtimePrice {
 
 type PriceMap = Record<string, RealtimePrice>
 
-/**
- * Hook yang meng‑stream harga secara real‑time untuk sekumpulan tokenId.
- * Meng‑handle:
- *   • koneksi WebSocket dengan exponential back‑off
- *   • ping/pong dalam format JSON
- *   • subscribe satu kali (koneksi ditutup & dibuka kembali bila token list berubah)
- */
 export function useRealtimePrices(tokenIds: string[]) {
   const [prices, setPrices] = useState<PriceMap>({})
   const [connected, setConnected] = useState(false)
@@ -39,13 +32,12 @@ export function useRealtimePrices(tokenIds: string[]) {
       JSON.stringify({
         type: 'market',
         assets_ids: ids,
-        // contoh custom flag; tetap ada bila dibutuhkan.
         custom_feature_enabled: true,
       })
     )
   }, [])
 
-  /** Membuat koneksi baru */
+  /** Buat koneksi baru */
   const connect = useCallback(() => {
     if (activeTokensRef.current.length === 0) return
 
@@ -57,11 +49,11 @@ export function useRealtimePrices(tokenIds: string[]) {
       retriesRef.current = 0
       subscribe(ws, activeTokensRef.current)
 
-      // heartbeat tiap 10 detik (JSON)
+      // Heartbeat tiap 10 detik – mengirim string "{}"
       if (heartbeatTimer.current) clearInterval(heartbeatTimer.current)
       heartbeatTimer.current = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ping' }))
+          ws.send('{}')
         }
       }, 10_000)
     }
@@ -71,13 +63,13 @@ export function useRealtimePrices(tokenIds: string[]) {
         const msg = JSON.parse(evt.data as string)
         const now = Date.now()
 
-        // balas ping server
-        if (msg.type === 'ping') {
-          ws.send(JSON.stringify({ type: 'pong' }))
+        // Server ping → balas dengan "{}"
+        if (Object.keys(msg).length === 0) {
+          ws.send('{}')
           return
         }
 
-        // best bid / ask
+        // best_bid_ask
         if (msg.event_type === 'best_bid_ask') {
           const tokenId: string = msg.asset_id
           const bid = parseFloat(msg.best_bid ?? '0')
@@ -96,7 +88,7 @@ export function useRealtimePrices(tokenIds: string[]) {
           return
         }
 
-        // last trade price
+        // last_trade_price
         if (msg.event_type === 'last_trade_price') {
           const tokenId: string = msg.asset_id
           const price = parseFloat(msg.price ?? '0')
@@ -113,7 +105,7 @@ export function useRealtimePrices(tokenIds: string[]) {
           return
         }
 
-        // batch price_change
+        // price_change (batch)
         if (msg.event_type === 'price_change' && Array.isArray(msg.price_changes)) {
           setPrices(prev => {
             const next = { ...prev }
@@ -134,13 +126,11 @@ export function useRealtimePrices(tokenIds: string[]) {
           })
         }
       } catch {
-        // ignore malformed payloads
+        // Abaikan pesan yang tidak dapat diparse
       }
     }
 
-    ws.onerror = () => {
-      setConnected(false)
-    }
+    ws.onerror = () => setConnected(false)
 
     ws.onclose = () => {
       setConnected(false)
@@ -149,21 +139,20 @@ export function useRealtimePrices(tokenIds: string[]) {
         clearInterval(heartbeatTimer.current)
         heartbeatTimer.current = null
       }
-      // exponential back‑off: 1 s → 2 s → 4 s … max 30 s
       const delay = Math.min(1_000 * 2 ** retriesRef.current, 30_000)
       retriesRef.current += 1
       reconnectTimer.current = setTimeout(connect, delay)
     }
   }, [subscribe])
 
-  /** Re‑connect ketika token list berubah */
+  /** Re‑connect bila token list berubah */
   useEffect(() => {
     const ids = tokenIds.filter(Boolean)
     activeTokensRef.current = ids
 
-    // Tutup koneksi yang ada (jika ada) sebelum membuka yang baru
+    // Tutup koneksi lama (jika ada)
     if (wsRef.current) {
-      wsRef.current.onclose = null   // cegah auto‑reconnect dari onclose lama
+      wsRef.current.onclose = null
       wsRef.current.close()
       wsRef.current = null
     }
@@ -171,7 +160,6 @@ export function useRealtimePrices(tokenIds: string[]) {
 
     if (ids.length > 0) connect()
 
-    // cleanup saat unmount atau token change selanjutnya
     return () => {
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current)
       if (heartbeatTimer.current) clearInterval(heartbeatTimer.current)
@@ -181,7 +169,7 @@ export function useRealtimePrices(tokenIds: string[]) {
         wsRef.current = null
       }
     }
-    // eslint‑disable react‑hooks/exhaustive‑deps – kami meng‑stringify tokenIds untuk deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(tokenIds)])
 
   return { prices, connected }
