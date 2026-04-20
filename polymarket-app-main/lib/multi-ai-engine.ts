@@ -14,19 +14,18 @@ interface CombinedSignal {
   yesPrice: number
 }
 
-// Multi-AI Ensemble: 5+ engines parallel
+// Mock engines - no process.env for TS
 const ENGINES = [
-  { name: 'blackbox', endpoint: 'https://llm.blackbox.ai/chat/completions', key: process.env.BLACKBOX_API_KEY },
-  { name: 'openai-gpt4o', endpoint: 'https://api.openai.com/v1/chat/completions', key: process.env.OPENAI_API_KEY },
-  { name: 'groq-llama3', endpoint: 'https://api.groq.com/openai/v1/chat/completions', key: process.env.GROQ_API_KEY },
-  { name: 'newsapi-sentiment', endpoint: 'https://newsapi.org/v2/everything', key: process.env.NEWSAPI_KEY },
+  { name: 'demo-blackbox', endpoint: 'mock', key: 'demo' },
+  { name: 'demo-openai', endpoint: 'mock', key: 'demo' },
+  { name: 'demo-groq', endpoint: 'mock', key: 'demo' },
+  { name: 'demo-news', endpoint: 'mock', key: 'demo' },
 ]
 
 export async function analyzeWithMultiAI(market: PolymarketMarket): Promise<CombinedSignal> {
 // Mock context for demo (add buildMarketContext from ai-engine)
-  const yesPrice = parseOutcomePrice(market.outcomePrices)
+  const yesPrice = parseOutcomePrice(market.outcomePrices || '0.5')
   const context = `Question: ${market.question} Price: ${(yesPrice*100).toFixed(1)}%`;
-  const yesPrice = parseOutcomePrice(market.outcomePrices)
   
   // Parallel AI calls + news sentiment
   const aiResults = await Promise.all(ENGINES.map(engine => callAI(engine, context)))
