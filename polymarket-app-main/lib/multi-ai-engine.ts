@@ -3,6 +3,7 @@
 interface PolymarketMarket {
   question: string
   outcomePrices?: string | string[]
+  id: string  // Added for market_id
 }
 
 interface CombinedSignal {
@@ -12,6 +13,8 @@ interface CombinedSignal {
   confidence: number
   analyses: any[]
   yesPrice: number
+  noPrice: number  // Added
+  recommendedSide: string  // Added
 }
 
 // Mock engines - no process.env for TS
@@ -24,7 +27,7 @@ const ENGINES = [
 
 export async function analyzeWithMultiAI(market: PolymarketMarket): Promise<CombinedSignal> {
 // Mock context for demo (add buildMarketContext from ai-engine)
-  const yesPrice = parseOutcomePrice(market.outcomePrices || '0.5')
+  const yesPrice = parseFloat((market.outcomePrices as string || '0.5')[0] || '0.5') || 0.5
   const context = `Question: ${market.question} Price: ${(yesPrice*100).toFixed(1)}%`;
   
   // Parallel AI calls + news sentiment
@@ -32,7 +35,7 @@ export async function analyzeWithMultiAI(market: PolymarketMarket): Promise<Comb
   const newsSentiment = await fetchNewsSentiment(market.question)
   
   // Ensemble voting
-  const analyses: AIAnalysis[] = aiResults.filter(Boolean).map(r => ({
+  const analyses = aiResults.filter(Boolean).map(r => ({
     model: r.model,
     signal: r.signal as any,
     confidence: r.confidence,
