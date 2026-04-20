@@ -1,7 +1,7 @@
 import type { PolymarketMarket, MarketPrice } from './types'
 
 // URL Constants (BASE URLs - tanpa path endpoint)
-const GAMMA_API = 'https://gamma.api.polymarket.com'
+const GAMMA_API = 'https://api.polymarket.com/events'
 const CLOB_API   = 'https://clob.polymarket.com'
 const DATA_API   = 'https://data-api.polymarket.com'
 
