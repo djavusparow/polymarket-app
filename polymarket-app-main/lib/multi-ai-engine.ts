@@ -1,5 +1,5 @@
-import { parseOutcomePrice } from './polymarket'
-import type { CombinedSignal, AIAnalysis, PolymarketMarket } from './types'
+import { parseOutcomePrice } from './polymarket.js'
+import type { CombinedSignal, AIAnalysis, PolymarketMarket } from './types.js'
 
 // Multi-AI Ensemble: 5+ engines parallel
 const ENGINES = [
