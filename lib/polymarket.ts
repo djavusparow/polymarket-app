@@ -1,9 +1,9 @@
 import type { PolymarketMarket, MarketPrice } from './types'
 
-// URL Constants (Production Endpoints)
-const GAMMA_API = 'https://api.polymarket.com/v2/gamma/markets';
-const CLOB_API   = 'https://clob.polymarket.com/midpoints';
-const DATA_API   = 'https://data.polymarket.com/v2/positions';
+// URL Constants (BASE URLs - tanpa path endpoint)
+const GAMMA_API = 'https://api.polymarket.com/v2/gamma'
+const CLOB_API   = 'https://clob.polymarket.com'
+const DATA_API   = 'https://data.polymarket.com/v2'
 
 // ─── Public Market Data (Gamma API — no auth) ─────────────────────────────────
 
@@ -31,7 +31,6 @@ export async function fetchTopVolumeMarkets(limit = 20): Promise<PolymarketMarke
       active: 'true',
       closed: 'false',
       limit: String(limit),
-      // Perbaikan: Menggunakan 'volume_24hr' sesuai dokumentasi Gamma API
       order: 'volume_24hr',
       ascending: 'false',
     })
@@ -47,11 +46,9 @@ export async function fetchTopVolumeMarkets(limit = 20): Promise<PolymarketMarke
 
 export async function fetchMarketByConditionId(conditionId: string): Promise<PolymarketMarket | null> {
   try {
-    // Perbaikan: Menggunakan query parameter 'condition_id' di endpoint /markets
     const res = await fetch(`${GAMMA_API}/markets?condition_id=${encodeURIComponent(conditionId)}`, { cache: 'no-store' })
     if (!res.ok) return null
     const data = await res.json()
-    // Response biasanya array, ambil item pertama
     return Array.isArray(data) && data.length > 0 ? data[0] : null
   } catch {
     return null
@@ -62,7 +59,6 @@ export async function fetchMarketByConditionId(conditionId: string): Promise<Pol
 
 export async function fetchTokenPrice(tokenId: string): Promise<MarketPrice | null> {
   try {
-    // Fetch best bid and best ask simultaneously
     const [bidRes, askRes] = await Promise.all([
       fetch(`${CLOB_API}/price?token_id=${encodeURIComponent(tokenId)}&side=BUY`),
       fetch(`${CLOB_API}/price?token_id=${encodeURIComponent(tokenId)}&side=SELL`),
@@ -78,11 +74,9 @@ export async function fetchTokenPrice(tokenId: string): Promise<MarketPrice | nu
   }
 }
 
-// Batch fetch midpoint prices for multiple tokens (CLOB public endpoint)
 /**
  * fetchMidpointPrices
  * POST https://clob.polymarket.com/midpoints
- *
  * Body: array of { token_id: string }
  * Response: { midpoints: Record<string, number> }
  */
@@ -91,7 +85,7 @@ export async function fetchMidpointPrices(
 ): Promise<Record<string, number>> {
   if (tokenIds.length === 0) return {}
 
-  const res = await fetch('${CLOB_API}/midpoints', {
+  const res = await fetch(`${CLOB_API}/midpoints`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(tokenIds.map((id) => ({ token_id: id }))),
@@ -102,14 +96,12 @@ export async function fetchMidpointPrices(
   }
 
   const data = await res.json()
-  // Response format: { midpoints: { "token_id": price, ... } }
   return data.midpoints ?? {}
 }
 
 /**
  * fetchLastTradePrices
  * POST https://clob.polymarket.com/last-trades-prices
- *
  * Body: array of { token_id: string }
  * Response: { last_trades: Record<string, number> }
  */
@@ -118,23 +110,19 @@ export async function fetchLastTradePrices(
 ): Promise<Record<string, number>> {
   if (tokenIds.length === 0) return {}
 
-  const res = await fetch('${CLOB_API}/last-trades-prices', {
+  const res = await fetch(`${CLOB_API}/last-trades-prices`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(tokenIds.map((id) => ({ token_id: id }))),
   })
 
   if (!res.ok) {
-    throw new Error(
-      `last-trades-prices fetch failed: ${res.status} ${res.statusText}`
-    )
+    throw new Error(`last-trades-prices fetch failed: ${res.status} ${res.statusText}`)
   }
 
   const data = await res.json()
-  // Response format: { last_trades: { "token_id": price, ... } }
   return data.last_trades ?? {}
 }
-
 
 export async function fetchMarketBookSummary(tokenId: string) {
   try {
@@ -146,7 +134,6 @@ export async function fetchMarketBookSummary(tokenId: string) {
   }
 }
 
-// Fetch tick size for a token (needed for order construction)
 export async function fetchTickSize(tokenId: string): Promise<string> {
   try {
     const res = await fetch(`${CLOB_API}/tick-size?token_id=${encodeURIComponent(tokenId)}`)
@@ -163,7 +150,7 @@ export async function fetchTickSize(tokenId: string): Promise<string> {
 export async function fetchUserPositions(walletAddress: string) {
   try {
     const res = await fetch(
-      `${DATA_API}/v2/positions?user=${walletAddress}&sizeThreshold=.1`,
+      `${DATA_API}/positions?user=${walletAddress}&sizeThreshold=.1`,
       { cache: 'no-store' }
     )
     if (!res.ok) return []
@@ -177,7 +164,7 @@ export async function fetchUserPositions(walletAddress: string) {
 export async function fetchUserTrades(walletAddress: string, limit = 50) {
   try {
     const res = await fetch(
-      `${DATA_API}/v2/activity?user=${walletAddress}&limit=${limit}`,
+      `${DATA_API}/activity?user=${walletAddress}&limit=${limit}`,
       { cache: 'no-store' }
     )
     if (!res.ok) return []
@@ -206,21 +193,11 @@ export function getYesNoTokenIds(market: PolymarketMarket): { yes: string; no: s
   return { yes: tokens[0], no: tokens[1] }
 }
 
-/**
- * Correctly parse outcomePrices from Gamma API.
- * Gamma may return it as:
- *   - string[] e.g. ["0.52", "0.48"]
- *   - JSON-encoded array string e.g. '["0.52", "0.48"]'
- *   - plain number string e.g. "0.52"
- * Returns the YES (index 0) probability as a number 0-1.
- */
 export function parseOutcomePrice(price: string | string[] | undefined): number {
   if (!price) return 0.5
-  // Already an array — take first element
   if (Array.isArray(price)) {
     return parseFloat(price[0]) || 0.5
   }
-  // JSON-encoded array string
   try {
     const parsed = JSON.parse(price)
     if (Array.isArray(parsed) && parsed.length > 0) {
@@ -229,7 +206,6 @@ export function parseOutcomePrice(price: string | string[] | undefined): number 
   } catch {
     // not JSON, fall through
   }
-  // Plain number string
   const n = parseFloat(price)
   return isNaN(n) ? 0.5 : n
 }
