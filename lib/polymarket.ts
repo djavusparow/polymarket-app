@@ -79,47 +79,62 @@ export async function fetchTokenPrice(tokenId: string): Promise<MarketPrice | nu
 }
 
 // Batch fetch midpoint prices for multiple tokens (CLOB public endpoint)
-export async function fetchMidpointPrices(tokenIds: string[]): Promise<Record<string, number>> {
+/**
+ * fetchMidpointPrices
+ * POST https://clob.polymarket.com/midpoints
+ *
+ * Body: array of { token_id: string }
+ * Response: { midpoints: Record<string, number> }
+ */
+export async function fetchMidpointPrices(
+  tokenIds: string[]
+): Promise<Record<string, number>> {
   if (tokenIds.length === 0) return {}
-  try {
-    // POST /midpoint body: { token_ids: [...] }
-    const res = await fetch(`${CLOB_API}/midpoint`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token_ids: tokenIds }),
-    })
-    if (!res.ok) return {}
-    const data = await res.json()
-    // Response: { "tokenId": "0.52", ... }
-    const result: Record<string, number> = {}
-    for (const [k, v] of Object.entries(data)) {
-      result[k] = parseFloat(v as string) || 0
-    }
-    return result
-  } catch {
-    return {}
+
+  const res = await fetch('https://clob.polymarket.com/midpoints', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(tokenIds.map((id) => ({ token_id: id }))),
+  })
+
+  if (!res.ok) {
+    throw new Error(`midpoints fetch failed: ${res.status} ${res.statusText}`)
   }
+
+  const data = await res.json()
+  // Response format: { midpoints: { "token_id": price, ... } }
+  return data.midpoints ?? {}
 }
 
-export async function fetchLastTradePrices(tokenIds: string[]): Promise<Record<string, number>> {
+/**
+ * fetchLastTradePrices
+ * POST https://clob.polymarket.com/last-trades-prices
+ *
+ * Body: array of { token_id: string }
+ * Response: { last_trades: Record<string, number> }
+ */
+export async function fetchLastTradePrices(
+  tokenIds: string[]
+): Promise<Record<string, number>> {
   if (tokenIds.length === 0) return {}
-  try {
-    const res = await fetch(`${CLOB_API}/last-trade-prices`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token_ids: tokenIds }),
-    })
-    if (!res.ok) return {}
-    const data: Array<{ token_id: string; price: string }> = await res.json()
-    const result: Record<string, number> = {}
-    for (const item of data) {
-      result[item.token_id] = parseFloat(item.price) || 0
-    }
-    return result
-  } catch {
-    return {}
+
+  const res = await fetch('https://clob.polymarket.com/last-trades-prices', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(tokenIds.map((id) => ({ token_id: id }))),
+  })
+
+  if (!res.ok) {
+    throw new Error(
+      `last-trades-prices fetch failed: ${res.status} ${res.statusText}`
+    )
   }
+
+  const data = await res.json()
+  // Response format: { last_trades: { "token_id": price, ... } }
+  return data.last_trades ?? {}
 }
+
 
 export async function fetchMarketBookSummary(tokenId: string) {
   try {
