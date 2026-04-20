@@ -422,8 +422,13 @@ export default function DashboardPage() {
 
               {/* Top signals list */}
               <div className="space-y-2">
-                {signals.slice(0, 8).map(signal => (
-                  <SignalRow key={signal.market_id} signal={signal} />
+{signals.slice(0, 8).map((signal, index) => (
+                  <div key={signal.market_id} className="space-y-2">
+                    <SignalRow signal={signal} />
+                    {index === 0 && signal.analyses.length > 0 && (
+                      <AIAnalysisDetail analyses={signal.analyses} />
+                    )}
+                  </div>
                 ))}
                 {signals.length === 0 && !scanning && (
                   <div className="flex flex-col items-center justify-center py-12 text-center border border-dashed border-border rounded-lg">

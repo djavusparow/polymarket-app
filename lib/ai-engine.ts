@@ -5,7 +5,7 @@ const LLM_ENDPOINT = 'https://llm.blackbox.ai/chat/completions'
 const LLM_HEADERS: Record<string, string> = {
   'customerId': 'cus_UIDAXBwD6XwhtQ',
   'Content-Type': 'application/json',
-'Authorization': 'Bearer DEMO_MOCK_KEY', // TODO: Replace with real Blackbox.ai key
+'Authorization': `Bearer ${process.env.NEXT_PUBLIC_BLACKBOX_API_KEY || 'DEMO_MOCK_KEY'}`, // Uses Vercel env
 }
 
 // ─── System Prompts per AI Role ───────────────────────────────────────────────
