@@ -69,12 +69,12 @@ export interface MarketPrice {
 
 export type SignalDirection = 'BUY' | 'SELL' | 'HOLD'
 
-export type AIModel = 'claude-sonnet' | 'ensemble'
+export type AIModel = 'blackbox' | 'openai' | 'groq' | 'claude-sonnet'
 
 export interface AIAnalysis {
   model: AIModel
   signal: SignalDirection
-  confidence: number // 0-100
+  confidence: number
   rationale: string
   targetPrice: number
   stopLoss: number
@@ -86,13 +86,12 @@ export interface CombinedSignal {
   market_id: string
   question: string
   direction: SignalDirection
-  confidence: number // ensemble confidence 0-100
+  confidence: number
   analyses: AIAnalysis[]
   yesPrice: number
   noPrice: number
   recommendedSide: 'YES' | 'NO'
   timestamp: number
-  executed?: boolean
 }
 
 // ─── Trade Types ──────────────────────────────────────────────────────────────
