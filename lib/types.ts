@@ -9,7 +9,7 @@ export interface PolymarketToken {
 
 export interface PolymarketMarket {
   id: string
-  condition_id: string
+  condition_id: string // NOTE: Validasi di route.ts sudah dihapus, tapi tipe tetap ada
   question: string
   description?: string
   category?: string
@@ -23,9 +23,13 @@ export interface PolymarketMarket {
   best_ask?: number
   last_trade_price?: number
   outcomes?: string[]
-  outcomePrices?: string[]
+  
+  // Penyesuaian: outcomePrices diperlakukan sebagai string JSON di ai-engine.ts
+  // Jika data asli berupa array, pastikan konversi ke string JSON sebelum memanggil analyzeMarket
+  outcomePrices: string 
+  
   clobTokenIds?: string[]
-  tokens?: PolymarketToken[] // Sesuai dokumentasi resmi (menggunakan tipe PolymarketToken)
+  tokens?: PolymarketToken[] 
   image?: string
   icon?: string
   minimum_tick_size?: number
@@ -92,6 +96,9 @@ export interface CombinedSignal {
   noPrice: number
   recommendedSide: 'YES' | 'NO'
   timestamp: number
+  
+  // ✅ DIPERLUKAN UNTUK FIX ERROR: Property 'executed' does not exist
+  executed?: boolean
 }
 
 // ─── Trade Types ──────────────────────────────────────────────────────────────
