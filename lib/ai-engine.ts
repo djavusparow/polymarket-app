@@ -41,6 +41,8 @@ async function fetchNews(query: string): Promise<string> {
 }
 
 async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, context: string): Promise<AIAnalysis | null> {
+  console.log(`[callLLM] ${provider.name} → ${provider.endpoint}`)
+  
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), 30000)
 
@@ -50,6 +52,8 @@ async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, c
       [provider.keyHeader]: `${provider.keyPrefix}${provider.key}`
     }
     if (provider.name === 'blackbox') headers.customerId = 'cus_UIDAXBwD6XwhtQ'
+
+    console.log(`[callLLM] Headers set for ${provider.name}`)
 
     const res = await fetch(provider.endpoint, {
       method: 'POST',
@@ -64,6 +68,8 @@ async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, c
     })
     clearTimeout(timeoutId)
 
+    console.log(`[callLLM] ${provider.name} status: ${res.status}`)
+
     if (!res.ok) {
       console.error(`[${provider.name}] HTTP ${res.status}`)
       return null
@@ -76,11 +82,22 @@ async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, c
 
     // Strict validation
     const signal = parsed.signal as string
-    if (!['BUY', 'SELL', 'HOLD'].includes(signal)) return null
+    if (!['BUY', 'SELL', 'HOLD'].includes(signal)) {
+      console.error(`[${provider.name}] Invalid signal: ${signal}`)
+      return null
+    }
     const confidence = Number(parsed.confidence)
-    if (isNaN(confidence) || confidence < 0 || confidence > 100) return null
+    if (isNaN(confidence) || confidence < 0 || confidence > 100) {
+      console.error(`[${provider.name}] Invalid confidence: ${confidence}`)
+      return null
+    }
     const prob = Number(parsed.true_probability_yes)
-    if (isNaN(prob) || prob < 0 || prob > 1) return null
+    if (isNaN(prob) || prob < 0 || prob > 1) {
+      console.error(`[${provider.name}] Invalid prob: ${prob}`)
+      return null
+    }
+
+    console.log(`[${provider.name}] Success confidence: ${confidence}`)
 
     return {
       model: provider.name as AIModel,
@@ -134,31 +151,54 @@ function ensemble(analyses: AIAnalysis[]): { direction: SignalDirection; confide
 }
 
 export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedSignal> {
-  const baseContext = buildMarketContext(market)
-  const news = await fetchNews(market.question)
-  const fullContext = news ? baseContext + news : baseContext
+  console.log('[analyzeMarket] Starting for:', market.id)
+  
+  try {
+    const baseContext = buildMarketContext(market)
+    console.log('[analyzeMarket] Context ready, fetching news...')
+    
+    const news = await fetchNews(market.question)
+    console.log('[analyzeMarket] News:', news.length > 0 ? 'OK' : 'Empty')
+    
+    const fullContext = news ? baseContext + news : baseContext
+    
+    const providers = LLM_PROVIDERS.filter(p => p.key).sort(() => Math.random() - 0.5).slice(0, 3)
+    console.log('[analyzeMarket] Providers:', providers.map(p => p.name))
+    
+    if (providers.length === 0) {
+      console.error('[analyzeMarket] No providers - keys missing')
+    }
+    
+    console.log('[analyzeMarket] Calling LLMs...')
+    const results = await Promise.all([
+      callLLM(providers[0] || LLM_PROVIDERS[0], PROMPTS.MARKET, fullContext),
+      callLLM(providers[1] || LLM_PROVIDERS[1], PROMPTS.RISK, fullContext),
+      callLLM(providers[2] || LLM_PROVIDERS[2], PROMPTS.SENTIMENT, fullContext)
+    ])
+    
+    console.log('[analyzeMarket] Results:', results.filter(Boolean).length)
+    
+    const analyses = results.filter(Boolean) as AIAnalysis[]
+    const ensembleResult = ensemble(analyses)
 
-  const providers = LLM_PROVIDERS.filter(p => p.key).sort(() => Math.random() - 0.5).slice(0, 3)
-  const results = await Promise.all([
-    callLLM(providers[0], PROMPTS.MARKET, fullContext),
-    callLLM(providers[1], PROMPTS.RISK, fullContext),
-    callLLM(providers[2], PROMPTS.SENTIMENT, fullContext)
-  ])
-
-  const analyses = results.filter(Boolean) as AIAnalysis[]
-  const ensembleResult = ensemble(analyses)
-
-  const yesPrice = parseOutcomePrice(market.outcomePrices)
-  return {
-    market_id: market.id,
-    question: market.question,
-    direction: ensembleResult.direction,
-    confidence: ensembleResult.confidence,
-    analyses,
-    yesPrice,
-    noPrice: 1 - yesPrice,
-    recommendedSide: ensembleResult.recommendedSide,
-    timestamp: Date.now()
+    const yesPrice = parseOutcomePrice(market.outcomePrices)
+    const signal = {
+      market_id: market.id,
+      question: market.question,
+      direction: ensembleResult.direction,
+      confidence: ensembleResult.confidence,
+      analyses,
+      yesPrice,
+      noPrice: 1 - yesPrice,
+      recommendedSide: ensembleResult.recommendedSide,
+      timestamp: Date.now()
+    }
+    
+    console.log('[analyzeMarket] Final confidence:', signal.confidence)
+    return signal
+  } catch (e) {
+    console.error('[analyzeMarket] ERROR:', e)
+    throw e
   }
 }
 
