@@ -28,14 +28,13 @@ export async function POST(request: NextRequest) {
     const market: PolymarketMarket = body.market
     
     // 2. Validasi Input
-    if (!market || !market.question || !market.condition_id) {
-      console.warn('[api/analyze] Invalid market data', {
-        hasMarket: !!market,
-        hasQuestion: !!market?.question,
-        hasConditionId: !!market?.condition_id
-      })
-      return NextResponse.json({ error: 'Invalid market data' }, { status: 400 })
-    }
+    if (!market || !market.question) {
+  console.warn('[api/analyze] Invalid market data', {
+    hasMarket: !!market,
+    hasQuestion: !!market?.question,
+  })
+  return NextResponse.json({ error: 'Invalid market data: Missing market or question' }, { status: 400 })
+}
 
     console.log(`[api/analyze] Processing market: "${market.question.slice(0, 50)}..."`)
     
