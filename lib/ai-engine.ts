@@ -1,7 +1,12 @@
 import type { PolymarketMarket, AIAnalysis, CombinedSignal, AIModel, SignalDirection } from './types'
 import { parseOutcomePrice } from './polymarket'
 
-const LLM_ENDPOINT = 'https://llm.blackbox.ai/chat/completions'
+const NEWS_API_KEY = process.env.NEWSAPI_KEY || ''
+const LLM_PROVIDERS = [
+  { name: 'blackbox', endpoint: 'https://llm.blackbox.ai/chat/completions', keyHeader: 'Authorization', keyPrefix: 'Bearer ', key: process.env.NEXT_PUBLIC_BLACKBOX_API_KEY || '' },
+  { name: 'openai', endpoint: 'https://api.openai.com/v1/chat/completions', keyHeader: 'Authorization', keyPrefix: 'Bearer ', key: process.env.NEXT_PUBLIC_OPENAI_API_KEY || '' },
+  { name: 'groq', endpoint: 'https://api.groq.com/openai/v1/chat/completions', keyHeader: 'Authorization', keyPrefix: 'Bearer ', key: process.env.NEXT_PUBLIC_GROQ_API_KEY || '' }
+] as const
 const LLM_HEADERS: Record<string, string> = {
   'customerId': 'cus_UIDAXBwD6XwhtQ',
   'Content-Type': 'application/json',
@@ -81,11 +86,40 @@ Respond ONLY with valid JSON in this exact format:
 
 // ─── Individual AI Analysis ───────────────────────────────────────────────────
 
+async function fetchNews(query: string): Promise<string> {
+  if (!NEWS_API_KEY) return ''
+  try {
+    const res = await fetch(`https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&language=en&apiKey=${NEWS_API_KEY}`)
+    const data = await res.json()
+    const recent = data.articles?.slice(0, 3).map(a => `- ${a.title} (${new Date(a.publishedAt).toLocaleDateString()})`).join('\\n')
+    return recent ? `RECENT NEWS:\\n${recent}` : ''
+  } catch {
+    return ''
+  }
+}
+
 async function callAI(
   systemPrompt: string,
   marketContext: string,
   model = 'openrouter/claude-sonnet-4'
 ): Promise<Record<string, unknown> | null> {
+  const news = await fetchNews(marketContext.match(/Question: (.+?)\n/)?.[1] || '')
+  const fullContext = news ? marketContext + '\\n\\n' + news : marketContext
+  
+  // Round-robin LLM providers
+  const activeProviders = LLM_PROVIDERS.filter(p => p.key)
+  if (activeProviders.length === 0) return null
+  
+  const provider = activeProviders[Math.floor(Math.random() * activeProviders.length)]
+  const headers = {
+    'Content-Type': 'application/json',
+    [provider.keyHeader]: `${provider.keyPrefix}${provider.key}`
+  }
+
+  // Blackbox.ai customerId if selected
+  if (provider.name === 'blackbox') {
+    ;(headers as any)['customerId'] = 'cus_UIDAXBwD6XwhtQ'
+  }
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 second timeout
 
