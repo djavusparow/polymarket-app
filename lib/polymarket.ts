@@ -193,21 +193,15 @@ export function getYesNoTokenIds(market: PolymarketMarket): { yes: string; no: s
   return { yes: tokens[0], no: tokens[1] }
 }
 
-export function parseOutcomePrice(price: string | string[] | undefined): number {
-  if (!price) return 0.5
-  if (Array.isArray(price)) {
-    return parseFloat(price[0]) || 0.5
-  }
+export function parseOutcomePrice(outcomePrices: string): number {
   try {
-    const parsed = JSON.parse(price)
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parseFloat(parsed[0]) || 0.5
-    }
+    const parsed = JSON.parse(outcomePrices)
+    if (typeof parsed.yes === 'number') return parsed.yes
+    if (typeof parsed.yesPrice === 'number') return parsed.yesPrice
+    return 0
   } catch {
-    // not JSON, fall through
+    return 0
   }
-  const n = parseFloat(price)
-  return isNaN(n) ? 0.5 : n
 }
 
 export function formatVolume(vol: number | undefined): string {
