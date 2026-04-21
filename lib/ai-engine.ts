@@ -1,7 +1,7 @@
 import type { PolymarketMarket, AIAnalysis, CombinedSignal, AIModel, SignalDirection } from './types'
 import { parseOutcomePrice } from './polymarket'
 
-// Server env
+// Server env (secure)
 const NEWS_API_KEY = process.env.NEWSAPI_KEY || ''
 const BLACKBOX_API_KEY = process.env.BLACKBOX_API_KEY || ''
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
@@ -14,25 +14,28 @@ const LLM_PROVIDERS = [
 ] as const
 
 const PROMPTS = {
-  MARKET: `Polymarket analyst. JSON only:
-{"signal":"BUY|SELL|HOLD","confidence":0-100,"rationale":"...","true_probability_yes":0-1,"edge":-100-100,"target_price":0-1,"stop_loss_pct":0-50,"take_profit_pct":0-200}`,
-  RISK: `Risk analyst. Same JSON.`,
+  MARKET: `Expert Polymarket analyst. JSON only:
+{"signal":"BUY|SELL|HOLD","confidence":0-100,"rationale":"brief","true_probability_yes":0-1,"edge":-100-100,"target_price":0-1,"stop_loss_pct":0-50,"take_profit_pct":0-200}`,
+  RISK: `Risk analyst. Same JSON format.`,
   SENTIMENT: `Sentiment analyst. Same JSON.`
 }
 
 async function fetchNews(query: string): Promise<string> {
-  if (!NEWS_API_KEY) return ''
+  if (!NEWS_API_KEY) {
+    console.warn('NewsAPI key missing')
+    return ''
+  }
   try {
     const res = await fetch(`https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&language=en&apiKey=${NEWS_API_KEY}`)
     if (!res.ok) {
-      console.warn('NewsAPI failed:', res.status)
+      console.warn(`NewsAPI ${res.status}: ${res.statusText}`)
       return ''
     }
     const data = await res.json()
     const recent = data.articles?.slice(0, 3).map((a: any) => `- ${a.title} (${new Date(a.publishedAt).toLocaleDateString()})`).join('\n') || ''
     return recent ? `\n\nRECENT NEWS:\n${recent}` : ''
   } catch (e) {
-    console.warn('NewsAPI error:', e)
+    console.warn('NewsAPI fetch error:', e)
     return ''
   }
 }
@@ -61,7 +64,10 @@ async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, c
     })
     clearTimeout(timeoutId)
 
-    if (!res.ok) return null
+    if (!res.ok) {
+      console.error(`[${provider.name}] HTTP ${res.status}`)
+      return null
+    }
 
     const data = await res.json()
     const content = data?.choices?.[0]?.message?.content ?? ''
@@ -69,34 +75,40 @@ async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, c
     const parsed = JSON.parse(clean)
 
     // Strict validation
-    if (!['BUY', 'SELL', 'HOLD'].includes(parsed.signal as string)) return null
-    if (typeof parsed.confidence !== 'number' || parsed.confidence < 0 || parsed.confidence > 100) return null
-    if (typeof parsed.true_probability_yes !== 'number' || parsed.true_probability_yes < 0 || parsed.true_probability_yes > 1) return null
+    const signal = parsed.signal as string
+    if (!['BUY', 'SELL', 'HOLD'].includes(signal)) return null
+    const confidence = Number(parsed.confidence)
+    if (isNaN(confidence) || confidence < 0 || confidence > 100) return null
+    const prob = Number(parsed.true_probability_yes)
+    if (isNaN(prob) || prob < 0 || prob > 1) return null
 
     return {
       model: provider.name as AIModel,
-      signal: parsed.signal as SignalDirection,
-      confidence: parsed.confidence as number,
-      rationale: parsed.rationale as string || '',
-      targetPrice: parsed.target_price as number || 0.5,
-      stopLoss: parsed.stop_loss_pct as number || 20,
-      takeProfit: parsed.take_profit_pct as number || 50,
+      signal: signal as SignalDirection,
+      confidence,
+      rationale: String(parsed.rationale || ''),
+      targetPrice: Number(parsed.target_price) || 0.5,
+      stopLoss: Number(parsed.stop_loss_pct) || 20,
+      takeProfit: Number(parsed.take_profit_pct) || 50,
       timestamp: Date.now()
     }
-  } catch {
+  } catch (e) {
     clearTimeout(timeoutId)
+    console.error(`[${provider.name}] error:`, e)
     return null
   }
 }
 
 function buildMarketContext(market: PolymarketMarket): string {
   const yesPrice = parseOutcomePrice(market.outcomePrices)
-  return `Polymarket market: ${market.question}
-Category: ${market.category || 'General'}
-Prices: YES ${(yesPrice * 100).toFixed(1)}% | NO ${(100 - yesPrice * 100).toFixed(1)}%
-Volume 24h: $${(market.volume24hr || 0).toLocaleString()}
-End date: ${market.end_date_iso ? new Date(market.end_date_iso).toLocaleDateString() : 'TBD'}
-Give trading signal (JSON only).`
+  const volume = (market.volume24hr || 0).toLocaleString()
+  return `MARKET: ${market.question}
+CAT: ${market.category || 'General'}
+YES: ${(yesPrice * 100).toFixed(1)}% | NO: ${(100 - yesPrice * 100).toFixed(1)}%
+VOL24: $${volume}
+END: ${market.end_date_iso ? new Date(market.end_date_iso).toLocaleDateString() : 'TBD'}
+
+JSON trading signal.`
 }
 
 function ensemble(analyses: AIAnalysis[]): { direction: SignalDirection; confidence: number; recommendedSide: 'YES' | 'NO' } {
@@ -108,6 +120,10 @@ function ensemble(analyses: AIAnalysis[]): { direction: SignalDirection; confide
   const totalScore = buyScore + sellScore
   const avgConf = valid.reduce((sum, a) => sum + a.confidence, 0) / valid.length
 
+  if (totalScore === 0) {
+    return { direction: 'HOLD', confidence: Math.round(avgConf * 0.5), recommendedSide: 'YES' }
+  }
+
   if (buyScore > sellScore && buyScore / totalScore > 0.4) {
     return { direction: 'BUY', confidence: Math.round((buyScore / totalScore) * avgConf), recommendedSide: 'YES' }
   }
@@ -118,19 +134,21 @@ function ensemble(analyses: AIAnalysis[]): { direction: SignalDirection; confide
 }
 
 export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedSignal> {
-  const context = buildMarketContext(market)
-  const yesPrice = parseOutcomePrice(market.outcomePrices)
+  const baseContext = buildMarketContext(market)
+  const news = await fetchNews(market.question)
+  const fullContext = news ? baseContext + news : baseContext
 
-  const providers = LLM_PROVIDERS.filter(p => p.key).sort(() => Math.random() - 0.5) // Random order
+  const providers = LLM_PROVIDERS.filter(p => p.key).sort(() => Math.random() - 0.5).slice(0, 3)
   const results = await Promise.all([
-    callLLM(providers[0] || LLM_PROVIDERS[0], PROMPTS.MARKET, context),
-    callLLM(providers[1] || LLM_PROVIDERS[1], PROMPTS.RISK, context),
-    callLLM(providers[2] || LLM_PROVIDERS[2], PROMPTS.SENTIMENT, context)
+    callLLM(providers[0], PROMPTS.MARKET, fullContext),
+    callLLM(providers[1], PROMPTS.RISK, fullContext),
+    callLLM(providers[2], PROMPTS.SENTIMENT, fullContext)
   ])
 
   const analyses = results.filter(Boolean) as AIAnalysis[]
   const ensembleResult = ensemble(analyses)
 
+  const yesPrice = parseOutcomePrice(market.outcomePrices)
   return {
     market_id: market.id,
     question: market.question,
@@ -147,19 +165,21 @@ export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedS
 export async function analyzeMarketsBatch(markets: PolymarketMarket[]): Promise<CombinedSignal[]> {
   const signals: CombinedSignal[] = []
   const CONCURRENCY = 3
+  let completed = 0
 
   for (let i = 0; i < markets.length; i += CONCURRENCY) {
     const batch = markets.slice(i, i + CONCURRENCY)
-    const batchResults = await Promise.all(batch.map(async (market, batchIdx) => {
+    const batchResults = await Promise.all(batch.map(async (market) => {
       const signal = await analyzeMarket(market)
-      if (batchIdx % 10 === 0) console.log(`Progress: ${Math.round((i + batchIdx + 1) / markets.length * 100)}%`)
+      completed++
+      if (completed % 10 === 0) console.log(`AI Progress: ${Math.round(completed / markets.length * 100)}%`)
       return signal
     }))
 
-    signals.push(...batchResults.filter(Boolean))
+    signals.push(...batchResults)
     
     if (i + CONCURRENCY < markets.length) {
-      await new Promise(r => setTimeout(r, 1000)) // Rate limit backoff
+      await new Promise(r => setTimeout(r, 1000)) // Backoff
     }
   }
 
