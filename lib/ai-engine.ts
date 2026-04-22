@@ -299,11 +299,11 @@ export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedS
     const getProvider = (index: number) => activeProviders[index % activeProviders.length]
     
     const results = await Promise.all([
-      callLLM(getProvider(0), PROMPTS.MARKET, fullContext),
-      callLLM(getProvider(1), PROMPTS.RISK, fullContext),
-      callLLM(providers[2], PROMPTS.SENTIMENT,fullContext),
-      ...(providers[3] ? [callLLM(providers[3], PROMPTS.MARKET, fullContext)] : [])
-    ]);
+  callLLM(providers[0], PROMPTS.MARKET,    fullContext),
+  callLLM(providers[1], PROMPTS.RISK,     fullContext),
+  callLLM(providers[2], PROMPTS.SENTIMENT,fullContext),
+  ...(providers[3] ? [callLLM(providers[3], PROMPTS.MARKET, fullContext)] : [])
+]);
 
     // 4. Gabungkan hasil
     const analyses = results.filter(Boolean) as AIAnalysis[]
