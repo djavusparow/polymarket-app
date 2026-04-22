@@ -10,7 +10,7 @@ const CTF_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'
 const NEG_RISK_EXCHANGE = '0xC5d563A36AE78145C45a50134d48A1215220f80a'
 const CHAIN_ID = 137n
 
-// --- Keccak256 Implementation ---
+// --- Keccak256 Implementation (Sama seperti sebelumnya) ---
 function keccak256(input: Uint8Array): Uint8Array {
   const RATE = 136
   const RC: [number, number][] = [
@@ -140,7 +140,6 @@ function signDigest(privateKeyHex: string, digest: Uint8Array): string {
 function buildOrderPayload(params: any): any {
   const { privateKey, funderAddress, tokenId, price, size, side, signatureType, negRisk } = params
 
-  // Validasi Kritis
   if (!tokenId || typeof tokenId !== 'string' || tokenId === '') {
     throw new Error(`Token ID must be a non-empty string. Received: ${typeof tokenId} (${tokenId})`)
   }
@@ -162,7 +161,6 @@ function buildOrderPayload(params: any): any {
   
   const salt        = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000))
 
-  // Untuk Type 0, signer adalah funderAddress
   const signerAddress = funderAddress
 
   const orderStruct = {
@@ -233,32 +231,39 @@ export async function POST(request: Request) {
     }
     const market = await marketRes.json()
 
-    // 3. Determine Token ID
-    let tokenIds = market.clobTokenIds ?? []
-    
-    // Handle case where clobTokenIds might be a string or not an array
-    if (!Array.isArray(tokenIds)) {
-        console.warn(`[api/execute] clobTokenIds is not an array: ${JSON.stringify(tokenIds)}`)
-        tokenIds = []
+    // 3. Determine Token ID (Fixed for Double-Encoded JSON)
+    let tokenIdsRaw = market.clobTokenIds
+    let tokenIds: string[] = []
+
+    // LOGIKA PERBAIKAN: Cek apakah clobTokenIds adalah string yang berisi JSON array
+    if (typeof tokenIdsRaw === 'string') {
+      try {
+        console.log(`[api/execute] Detected clobTokenIds as string. Attempting to parse...`)
+        const parsed = JSON.parse(tokenIdsRaw)
+        if (Array.isArray(parsed)) {
+          tokenIds = parsed
+        } else {
+          console.warn(`[api/execute] Parsed data is not an array: ${JSON.stringify(parsed)}`)
+        }
+      } catch (e) {
+        console.error(`[api/execute] Failed to parse clobTokenIds string: ${e}`)
+      }
+    } else if (Array.isArray(tokenIdsRaw)) {
+      tokenIds = tokenIdsRaw
     }
 
+    console.log(`[api/execute] Parsed tokenIds: ${JSON.stringify(tokenIds)}`)
+
     if (tokenIds.length < 2) {
-      console.error(`[api/execute] Invalid tokenIds length: ${tokenIds.length}. Data: ${JSON.stringify(tokenIds)}`)
-      return NextResponse.json({ error: 'Market token IDs not found or insufficient.' }, { status: 400 })
+      console.error(`[api/execute] Invalid tokenIds length: ${tokenIds.length}`)
+      return NextResponse.json({ error: `Market token IDs not found (length: ${tokenIds.length})` }, { status: 400 })
     }
 
     // Polymarket: tokenIds[0] = YES, tokenIds[1] = NO
-    // Validasi agar tokenId berupa string
-    let tokenIdStr: string = ''
-    if (side === 'YES') {
-        tokenIdStr = String(tokenIds[0])
-    } else {
-        tokenIdStr = String(tokenIds[1])
-    }
+    const tokenIdStr = side === 'YES' ? String(tokenIds[0]) : String(tokenIds[1])
 
-    // VALIDASI FINAL TOKEN ID SEBELUM MASUK BUILDER
     if (!tokenIdStr || tokenIdStr === '') {
-       console.error(`[api/execute] Resolved tokenId is empty. Side: ${side}, IDs: ${JSON.stringify(tokenIds)}`)
+       console.error(`[api/execute] Resolved tokenId is empty. Side: ${side}`)
        return NextResponse.json({ error: 'Resolved Token ID is empty.' }, { status: 400 })
     }
 
@@ -275,7 +280,7 @@ export async function POST(request: Request) {
     if (size <= 0) return NextResponse.json({ error: 'Size invalid' }, { status: 400 })
 
     // 5. Build & Send Order
-    console.log(`[api/execute] Building order for tokenId: ${tokenIdStr} (Type: ${typeof tokenIdStr})`)
+    console.log(`[api/execute] Building order for tokenId: ${tokenIdStr}`)
     
     const payload = buildOrderPayload({
       privateKey, 
@@ -316,7 +321,7 @@ export async function POST(request: Request) {
       trade_id: crypto.randomUUID(),
       order_id: orderId,
       condition_id: market.condition_id ?? market_id,
-      token_ids: [tokenIds[0], tokenIds[1]],
+      token_ids: tokenIds, // Kirim array yang sudah di-parse
       token_id: tokenIdStr,
       status: orderData?.status ?? 'LIVE',
       price: clampedPrice,
