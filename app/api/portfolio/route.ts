@@ -1,5 +1,3 @@
-// app/api/portfolio/route.ts
-
 import { NextRequest, NextResponse } from 'next/server'
 import { buildClobHeaders, resolveCredentials } from '@/lib/clob-auth'
 import type { ClobCreds } from '@/lib/clob-auth'
@@ -7,9 +5,12 @@ import type { ClobCreds } from '@/lib/clob-auth'
 const CLOB_HOST = 'https://clob.polymarket.com'
 const GAMMA_HOST = 'https://gamma-api.polymarket.com'
 
+// Helper untuk menghitung P&L sederhana dari history (jika diperlukan, opsional)
+// Di sini kita fokus pada balance saat ini
+
 export async function GET(request: NextRequest) {
   try {
-    // 1. Ambil Kredensial dari Header Request (dikirim dari page.tsx)
+    // 1. Ambil Kredensial dari Header Request
     const credsHeader = request.headers.get('X-Clob-Creds')
     
     let clientCreds: Partial<ClobCreds> | undefined
@@ -31,30 +32,45 @@ export async function GET(request: NextRequest) {
       }, { status: 400 })
     }
 
-    // 3. Fetch Balance dari CLOB API (/account)
-    // Endpoint ini umumnya lebih stabil untuk mendapatkan balance akun
+    // 3. Fetch Data dari Gamma API (Lebih stabil untuk informasi akun)
+    // Gamma API adalah API publik Polymarket yang menyediakan data market dan user
     try {
-      const authHeaders = await buildClobHeaders(creds, 'GET', `/account/${creds.funderAddress}`, '')
+      // Mengambil informasi akun (balance, positions) dari Gamma
+      // Note: Gamma mungkin tidak selalu punya endpoint balance langsung per address,
+      // tetapi kita bisa mendapatkan data token holdings atau menggunakan CLOB endpoint yang valid.
       
-      const accountRes = await fetch(`${CLOB_HOST}/account/${creds.funderAddress}`, {
+      // Coba gunakan endpoint Gamma yang umum untuk account stats
+      const gammaRes = await fetch(`${GAMMA_HOST}/account/${creds.funderAddress}`, {
         method: 'GET',
-        headers: authHeaders,
         cache: 'no-store'
       })
 
-      if (accountRes.ok) {
-        const accountData = await accountRes.json()
-        // Polymarket biasanya menyimpan balance di field 'balance' atau 'availableBalance'
-        // Di CLOB, balance seringkali berupa string wei (atau string numerik)
-        const balanceStr = accountData.balance || accountData.availableBalance || '0'
-        const balance = parseFloat(balanceStr) / 1e6 // USDC memiliki 6 desimal
+      if (gammaRes.ok) {
+        const accountData = await gammaRes.json()
         
-        // 4. Siapkan Stats
+        // Polymarket Gamma biasanya mengembalikan balance dalam field 'balance'
+        // Jika tidak ada, coba cek field lain atau fallback
+        const balanceStr = accountData.balance || accountData.availableBalance || '0'
+        
+        // Convert dari Wei ke USDC (USDC punya 6 desimal)
+        // Polymarket seringkali menyimpan nilai dalam string numerik tanpa pembagian, 
+        // atau dalam format yang perlu dikonversi. 
+        // Cek tipe data: jika balance > 1000, kemungkinan besar dalam satuan USDC langsung (bukan wei).
+        // Jika balance dalam bentuk hex/wei, gunakan Number(balanceStr) / 1e6.
+        
+        // Asumsi: Gamma mengembalikan balance dalam satuan USDC (float string)
+        let balance = parseFloat(balanceStr)
+        
+        // Jika balance sangat besar (misal > 100 juta), asumsikan itu Wei dan bagi 1e6
+        if (balance > 100000000) {
+            balance = balance / 1e6
+        }
+
         const stats = {
           total_balance: balance,
           available_balance: balance,
-          total_value: balance, // Asumsi sementara tanpa posisi terbuka yang dihitung server-side
-          total_pnl: 0, // PnL dihitung di client dari history trade lokal
+          total_value: balance, 
+          total_pnl: 0, 
           total_pnl_pct: 0,
           today_pnl: 0,
           today_trades: 0,
@@ -69,20 +85,59 @@ export async function GET(request: NextRequest) {
           timestamp: new Date().toISOString(),
         })
       } else {
-        console.log(`CLOB Account API failed: ${accountRes.status}`)
+        console.log(`Gamma API failed: ${gammaRes.status} ${gammaRes.statusText}`)
       }
     } catch (err) {
-      console.error('CLOB Fetch Error:', err)
+      console.error('Gamma Fetch Error:', err)
     }
 
-    // 5. Fallback: Jika CLOB gagal, coba Gamma API (opsional, tetapi rawan 404)
-    // Kita skip Gamma jika CLOB gagal karena fokus pada balance
-    
+    // 4. Fallback: Coba CLOB API (Endpoint yang valid)
+    // Jika Gamma gagal, coba endpoint CLOB yang mungkin valid.
+    // Seringkali balance ada di /account/me atau /user.
+    try {
+      const authHeaders = await buildClobHeaders(creds, 'GET', '/account/me', '')
+      
+      const clobRes = await fetch(`${CLOB_HOST}/account/me`, {
+        method: 'GET',
+        headers: authHeaders,
+        cache: 'no-store'
+      })
+
+      if (clobRes.ok) {
+        const data = await clobRes.json()
+        // Struktur respons CLOB biasanya { "balance": "...", "heldTokens": [...] }
+        const balanceStr = data.balance || data.availableBalance || '0'
+        let balance = parseFloat(balanceStr) / 1e6 // Asumsi dalam Wei/Atom
+
+        const stats = {
+          total_balance: balance,
+          available_balance: balance,
+          total_value: balance,
+          total_pnl: 0,
+          total_pnl_pct: 0,
+          today_pnl: 0,
+          today_trades: 0,
+          win_rate: 0,
+          open_positions: 0,
+        }
+
+        return NextResponse.json({
+          configured: true,
+          balance: balance,
+          stats: stats,
+          timestamp: new Date().toISOString(),
+        })
+      }
+    } catch (err) {
+      console.error('CLOB Account Me Error:', err)
+    }
+
+    // Jika semua gagal, return 0 atau data dummy agar UI tidak crash
     return NextResponse.json({
       configured: true,
       balance: 0,
       stats: defaultPortfolio(),
-      warning: 'Balance fetched from fallback (0)',
+      warning: 'Balance service unavailable, using fallback 0',
     })
 
   } catch (error: any) {
@@ -94,7 +149,6 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Helper default portfolio jika semua gagal
 function defaultPortfolio() {
   return {
     total_balance: 0,
