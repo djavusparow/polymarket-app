@@ -44,7 +44,7 @@ const LLM_PROVIDERS = [
   {
     name: 'groq',
     endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-    model: 'llama-3.1-8b-instant', // Model Groq yang masih aktif (ganti jika error)
+    model: 'llama-3.1-70b-versatile', // Model Groq yang masih aktif (ganti jika error)
     keyHeader: 'Authorization',
     keyPrefix: 'Bearer ',
     key: GROQ_API_KEY
