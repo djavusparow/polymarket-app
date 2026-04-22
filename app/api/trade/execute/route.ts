@@ -3,7 +3,6 @@
 import { NextResponse } from 'next/server'
 import { secp256k1 } from '@noble/curves/secp256k1'
 import { buildClobHeaders, resolveCredentials } from '@/lib/clob-auth'
-import type { ClobCreds } from '@/lib/clob-auth'
 
 const CLOB_HOST  = 'https://clob.polymarket.com'
 const GAMMA_HOST = 'https://gamma-api.polymarket.com'
@@ -11,9 +10,8 @@ const CTF_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'
 const NEG_RISK_EXCHANGE = '0xC5d563A36AE78145C45a50134d48A1215220f80a'
 const CHAIN_ID = 137n
 
-// ─── Keccak256 & Helpers ─────────────────────────────────────────────────────────────
+// --- Minimal Keccak256 Implementation ---
 function keccak256(input: Uint8Array): Uint8Array {
-  // Minimal implementation for required functions
   const RATE = 136
   const RC: [number, number][] = [
     [0x00000001,0x00000000],[0x00008082,0x00000000],[0x0000808a,0x80000000],
@@ -138,35 +136,50 @@ function signDigest(privateKeyHex: string, digest: Uint8Array): string {
   return `0x${r}${s}${v}`
 }
 
-// ─── Build Order Payload ─────────────────────────────────────────────────────────────
+// --- Build Order Payload (Fixed) ---
 function buildOrderPayload(params: any): any {
   const { privateKey, funderAddress, tokenId, price, size, side, signatureType, negRisk } = params
 
-  if (!tokenId || tokenId === '') throw new Error('Token ID is missing')
+  // Validasi Kritis: Cek apakah parameter kosong
+  if (!tokenId || tokenId === '') throw new Error('Token ID is missing or empty')
+  if (!funderAddress || funderAddress === '') throw new Error('Funder Address is missing')
+  if (!privateKey || privateKey === '') throw new Error('Private Key is missing')
 
   const priceNum = Number(price)
   const sizeNum = Number(size)
-  if (isNaN(priceNum) || priceNum <= 0 || priceNum >= 1) throw new Error(`Invalid price: ${price}`)
+  
+  // Validasi Angka
+  if (isNaN(priceNum) || priceNum <= 0) throw new Error(`Invalid price: ${price}`)
   if (isNaN(sizeNum) || sizeNum <= 0) throw new Error(`Invalid size: ${size}`)
 
   const SCALE       = 1_000_000n
   const priceBig    = BigInt(Math.round(priceNum * 1_000_000))
   const sizeBig     = BigInt(Math.round(sizeNum  * 1_000_000))
+  
+  // Cek apakah hasil perkalian kosong (harusnya tidak pernah terjadi jika size > 0)
+  if (priceBig === 0n || sizeBig === 0n) throw new Error('Calculated amounts are zero')
+
   const makerAmount = side === 'BUY'  ? (priceBig * sizeBig) / SCALE : sizeBig
   const takerAmount = side === 'BUY'  ? sizeBig : (priceBig * sizeBig) / SCALE
+  
   const salt        = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000))
 
-  // FIX: For Proxy Wallet (Type 0), signer MUST be the funderAddress (Proxy Address).
-  // The private key is used only for HMAC signing the request, not for deriving the on-chain signer.
+  // Untuk Type 0, signer adalah funderAddress
   const signerAddress = funderAddress
 
   const orderStruct = {
-    salt, maker: funderAddress, signer: signerAddress,
+    salt, 
+    maker: funderAddress, 
+    signer: signerAddress,
     taker: '0x0000000000000000000000000000000000000000',
-    tokenId: BigInt(tokenId),
-    makerAmount, takerAmount,
-    expiration: 0n, nonce: 0n, feeRateBps: 0n,
-    side: side === 'BUY' ? 0 : 1, signatureType,
+    tokenId: BigInt(tokenId), // Pastikan tokenId adalah string valid
+    makerAmount, 
+    takerAmount,
+    expiration: 0n, 
+    nonce: 0n, 
+    feeRateBps: 0n,
+    side: side === 'BUY' ? 0 : 1, 
+    signatureType,
   }
 
   const contract        = negRisk ? NEG_RISK_EXCHANGE : CTF_EXCHANGE
@@ -181,7 +194,7 @@ function buildOrderPayload(params: any): any {
       maker:        funderAddress,
       signer:       signerAddress,
       taker:        '0x0000000000000000000000000000000000000000',
-      tokenID:      tokenId,
+      tokenID:      tokenId, // API Polymarket menggunakan 'tokenID'
       makerAmount:  makerAmount.toString(),
       takerAmount:  takerAmount.toString(),
       expiration:   '0',
@@ -196,7 +209,7 @@ function buildOrderPayload(params: any): any {
   }
 }
 
-// ─── Route Handler ───────────────────────────────────────────────────────────────────
+// --- Route Handler ---
 export async function POST(request: Request) {
   try {
     const body = await request.json() as any
@@ -207,39 +220,40 @@ export async function POST(request: Request) {
       credentials: clientCreds,
     } = body
 
+    // 1. Validate Credentials
     const creds = resolveCredentials(clientCreds)
-    if (!creds) {
-      return NextResponse.json({ error: 'Credentials not configured.' }, { status: 401 })
-    }
+    if (!creds) return NextResponse.json({ error: 'Credentials not configured.' }, { status: 401 })
 
     const privateKey = process.env.POLYMARKET_PRIVATE_KEY ?? creds.privateKey ?? clientCreds?.privateKey ?? ''
-    if (!privateKey) {
-      return NextResponse.json({ error: 'POLYMARKET_PRIVATE_KEY not set in Vercel Env.' }, { status: 401 })
-    }
+    if (!privateKey) return NextResponse.json({ error: 'POLYMARKET_PRIVATE_KEY not set.' }, { status: 401 })
 
-    // 1. Fetch Market Data
+    // 2. Fetch Market Data
     const marketRes = await fetch(`${GAMMA_HOST}/markets/${market_id}`, { cache: 'no-store' })
     if (!marketRes.ok) {
-      console.warn(`[api/execute] Gamma API failed for ${market_id}: ${marketRes.status}`)
-      return NextResponse.json({ error: 'Failed to fetch market details from Gamma API' }, { status: 500 })
+      console.warn(`[api/execute] Gamma API failed: ${marketRes.status}`)
+      return NextResponse.json({ error: 'Failed to fetch market details' }, { status: 500 })
     }
     const market = await marketRes.json()
 
-    // 2. Determine Token ID
+    // 3. Determine Token ID
     const tokenIds = market.clobTokenIds ?? []
     if (tokenIds.length < 2) {
-      console.error(`[api/execute] Invalid tokenIds for market ${market_id}: ${JSON.stringify(tokenIds)}`)
-      return NextResponse.json({ error: 'Market token IDs not found in Gamma API.' }, { status: 400 })
+      console.error(`[api/execute] Invalid tokenIds: ${JSON.stringify(tokenIds)}`)
+      return NextResponse.json({ error: 'Market token IDs not found.' }, { status: 400 })
     }
 
+    // Polymarket: tokenIds[0] = YES, tokenIds[1] = NO
     const tokenId = side === 'YES' ? tokenIds[0] : tokenIds[1]
-    if (!tokenId) {
-      return NextResponse.json({ error: 'Token ID is empty.' }, { status: 400 })
+    
+    // VALIDASI FINAL TOKEN ID SEBELUM MASUK BUILDER
+    if (!tokenId || tokenId === '') {
+       console.error(`[api/execute] Resolved tokenId is empty. Side: ${side}, IDs: ${JSON.stringify(tokenIds)}`)
+       return NextResponse.json({ error: 'Resolved Token ID is empty.' }, { status: 400 })
     }
 
     const negRisk = Boolean(market.neg_risk)
 
-    // 3. Validate Price & Size
+    // 4. Price & Size Calculation
     let tickSize = parseFloat(market.minimum_tick_size ?? '0.01')
     if (isNaN(tickSize) || tickSize <= 0) tickSize = 0.01
     
@@ -249,7 +263,9 @@ export async function POST(request: Request) {
     if (clampedPrice <= 0 || clampedPrice >= 1) return NextResponse.json({ error: 'Price invalid' }, { status: 400 })
     if (size <= 0) return NextResponse.json({ error: 'Size invalid' }, { status: 400 })
 
-    // 4. Build & Send Order
+    // 5. Build & Send Order
+    console.log(`[api/execute] Building order for tokenId: ${tokenId}`)
+    
     const payload = buildOrderPayload({
       privateKey, 
       funderAddress: creds.funderAddress,
@@ -276,7 +292,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: errMsg }, { status: orderRes.status })
     }
 
-    // 5. Calculate SL/TP
+    // 6. Response
     const slPct = Number(stop_loss_pct ?? 30)
     const tpPct = Number(take_profit_pct ?? 80)
     const stopLoss = parseFloat((clampedPrice * (1 - slPct / 100)).toFixed(4))
