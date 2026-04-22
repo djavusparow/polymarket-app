@@ -122,27 +122,43 @@ Respond ONLY with valid JSON in this exact format:
 // 4. NEWS FETCHING (NewsAPI)
 // ────────────────────────────────────────────────────────────────────────
 async function fetchNews(query: string): Promise<string> {
-  if (!NEWS_API_KEY) return '';
+  if (!NEWS_API_KEY) return ''
+  
   try {
-    const ctrl = new AbortController();
-    const timeoutId = setTimeout(() => ctrl.abort(), 10_000);
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 detik timeout
+    
+    console.log(`[NewsAPI] Fetching news for: "${query.substring(0, 30)}..."`) // Log mulai
+    
     const res = await fetch(
-      `https://newsapi.org/v2/everything?q=${encodeURIComponent(
-        query
-      )}&sortBy=publishedAt&language=en&pageSize=5&apiKey=${NEWS_API_KEY}`,
-      { signal: ctrl.signal }
-    );
-    clearTimeout(timeoutId);
-    if (!res.ok) return '';
-    const data = await res.json();
-    if (!data.articles?.length) return '';
-    const lines = data.articles
+      `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&language=en&pageSize=3&apiKey=${NEWS_API_KEY}`,
+      { signal: controller.signal }
+    )
+    clearTimeout(timeoutId)
+
+    if (!res.ok) {
+        console.log(`[NewsAPI] Status ${res.status} (No data or limit reached)`)
+        return ''
+    }
+    
+    const data = await res.json()
+    
+    if (!data.articles || data.articles.length === 0) {
+        console.log(`[NewsAPI] No articles found`)
+        return ''
+    }
+
+    const recent = data.articles
       .slice(0, 3)
-      .map((a: any) => `- ${a.title} (Source: ${a.source?.name || 'unknown'})`);
-    return `\n\nLATEST NEWS:\n${lines.join('\n')}`;
+      .map((a: any) => `- ${a.title} (${a.source?.name || 'Unknown'})`)
+      .join('\n')
+    
+    console.log(`[NewsAPI] Found ${data.articles.length} articles`) // Log selesai
+    
+    return `\n\nLATEST NEWS:\n${recent}`
   } catch (e) {
-    console.warn('[NewsAPI] fetch error:', e);
-    return '';
+    console.warn('[NewsAPI] Fetch error:', e)
+    return ''
   }
 }
 
@@ -311,48 +327,50 @@ function ensemble(
 // 7. MAIN ANALYSIS FUNCTION
 // ────────────────────────────────────────────────────────────────────────
 export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedSignal> {
-  const start = Date.now();
-  console.log(`[analyzeMarket] Starting for: ${market.id}`);
-
+  const startTime = Date.now()
+  console.log(`[analyzeMarket] Starting for: ${market.id}`)
+  
   try {
-    const yesPrice = parseOutcomePrice(market.outcomePrices);
-    const baseContext = buildMarketContext(market);
+    const yesPrice = parseOutcomePrice(market.outcomePrices)
+    const baseContext = buildMarketContext(market)
+    
+    // 1. Fetch News
+    const news = await fetchNews(market.question)
+    
+    // Gabungkan base context DENGAN news
+    const fullContext = baseContext + news
 
-    // ---- News ----
-    const news = await fetchNews(market.question);
-    const fullContext = baseContext + news; // news already appended as string
-
-    // ---- Provider list (filter yang punya key) ----
-    const activeProviders = LLM_PROVIDERS.filter((p) => p.key && p.key.trim() !== '');
-    if (!activeProviders.length) {
-      console.error('[analyzeMarket] ❌ No API keys configured!');
-      return getDefaultSignal(market, yesPrice);
+    // 2. Siapkan Provider
+    const activeProviders = LLM_PROVIDERS.filter(p => p.key && p.key.trim() !== '')
+    
+    if (activeProviders.length === 0) {
+      console.error('[analyzeMarket] ❌ CRITICAL: No API keys configured!')
+      return getDefaultSignal(market, yesPrice)
     }
 
-    console.log(`[analyzeMarket] Active providers: ${activeProviders.map((p) => p.name).join(', ')}`);
+    console.log(`[analyzeMarket] Active providers: ${activeProviders.map(p => p.name).join(', ')}`)
 
-    // ---- Rotasi provider (memastikan maksimal 4 LLM) ----
-    const getProvider = (i: number) => activeProviders[i % activeProviders.length];
-
+    const getProvider = (index: number) => activeProviders[index % activeProviders.length]
+    
     const results = await Promise.all([
-      // 1️⃣ Market analyst
+      // 1. Market Analyst
       callLLM(getProvider(0), PROMPTS.MARKET, fullContext),
-      // 2️⃣ Risk analyst
+      // 2. Risk Analyst
       callLLM(getProvider(1), PROMPTS.RISK, fullContext),
-      // 3️⃣ Sentiment analyst
+      // 3. Sentiment Analyst
       callLLM(getProvider(2), PROMPTS.SENTIMENT, fullContext),
-      // 4️⃣ LLM ke‑4 (menggunakan kembali prompt market, sehingga selalu ada 4 panggilan LLM)
+      // 4. LLM Tambahan (Agar ada 4 AI)
       callLLM(getProvider(3), PROMPTS.MARKET, fullContext),
-      // 5️⃣ News analyst (pakai provider pertama; news sudah di‑string‑kan)
-      callLLM(getProvider(0), PROMPTS.NEWS_ANALYST, news || fullContext),
-    ]);
+      // 5. NEWS ANALYST
+      // Kita kirim fullContext (yang sudah termasuk berita) agar dia punya info harga & volume
+      callLLM(getProvider(0), PROMPTS.NEWS_ANALYST, fullContext) 
+    ])
 
-    const analyses = results.filter(Boolean) as AIAnalysis[];
-    console.log(
-      `[analyzeMarket] Completed in ${Date.now() - start}ms. Success: ${analyses.length}/${results.length}`
-    );
+    // 4. Gabungkan hasil
+    const analyses = results.filter(Boolean) as AIAnalysis[]
+    console.log(`[analyzeMarket] Completed in ${Date.now() - startTime}ms. Success: ${analyses.length}/${results.length}`)
 
-    const ensembleResult = ensemble(analyses);
+    const ensembleResult = ensemble(analyses)
 
     return {
       market_id: market.id,
@@ -363,11 +381,11 @@ export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedS
       yesPrice,
       noPrice: 1 - yesPrice,
       recommendedSide: ensembleResult.recommendedSide,
-      timestamp: Date.now(),
-    };
+      timestamp: Date.now()
+    }
   } catch (e) {
-    console.error('[analyzeMarket] ERROR:', e);
-    throw e;
+    console.error('[analyzeMarket] ERROR:', e)
+    throw e
   }
 }
 
