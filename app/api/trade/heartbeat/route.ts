@@ -1,3 +1,5 @@
+// app/api/trade/heartbeat/route.ts
+
 import { NextResponse } from 'next/server'
 import { buildClobHeaders, resolveCredentials } from '@/lib/clob-auth'
 import type { ClobCreds } from '@/lib/clob-auth'
@@ -27,10 +29,11 @@ export async function POST(request: Request) {
   }
 
   try {
-    // Correct endpoint path (plural 'heartbeats')
+    // Endpoint Polymarket untuk heartbeat
     const path = '/heartbeats'
     
-    // Include heartbeat_id if provided in previous response
+    // Body payload: mengirim heartbeat_id jika ada (untuk memperpanjang sesi)
+    // Jika tidak ada, Polymarket biasanya akan generate yang baru
     const bodyPayload = { 
       heartbeat_id: clientCreds?.heartbeat_id || "" 
     }
@@ -49,7 +52,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: text, status: res.status }, { status: res.status })
     }
 
-    // Parse response to get new heartbeat_id
     const responseData = await res.json() as { heartbeat_id?: string }
 
     return NextResponse.json({ 
