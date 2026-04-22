@@ -21,100 +21,113 @@ export async function GET(request: NextRequest) {
 
     console.log(`[Portfolio API] Fetching balance for ${creds.funderAddress} (Type: ${creds.signatureType})`)
 
-    // --- STRATEGI CARI BALANCE ---
-    // Karena Anda menggunakan Proxy Wallet (Signature Type 0 atau 1),
-    // Endpoint yang paling aman adalah menanyakan balance berdasarkan funder address.
-
-    let balance = 0
-    let found = false
-
-    // 1. Coba: /account/{funderAddress}/balances (Paling umum untuk Proxy)
-    if (!found) {
-      try {
-        const path = `/account/${creds.funderAddress}/balances`
-        const headers = await buildClobHeaders(creds, 'GET', path, '')
-        const res = await fetch(`${CLOB_HOST}${path}`, { headers, cache: 'no-store' })
-        
-        if (res.ok) {
-          const data = await res.json()
-          // Respons biasanya: { "USDC": "150000000", ... }
-          // USDC di Polymarket biasanya disimpan dalam satuan kecil (1e6)
-          if (data.USDC) {
-            balance = parseFloat(data.USDC) / 1e6
-            found = true
-            console.log(`[Portfolio API] Success via /account/{addr}/balances: ${balance}`)
-          }
-        } else {
-          console.log(`[Portfolio API] Failed ${path}: ${res.status}`)
-        }
-      } catch (e) { console.error(e) }
-    }
-
-    // 2. Coba: /account/me/balances (Jika auth context auto-detect funder)
-    if (!found) {
-      try {
-        const path = `/account/me/balances`
-        const headers = await buildClobHeaders(creds, 'GET', path, '')
-        const res = await fetch(`${CLOB_HOST}${path}`, { headers, cache: 'no-store' })
-        
-        if (res.ok) {
-          const data = await res.json()
-          if (data.USDC) {
-            balance = parseFloat(data.USDC) / 1e6
-            found = true
-            console.log(`[Portfolio API] Success via /account/me/balances: ${balance}`)
-          }
-        }
-      } catch (e) { console.error(e) }
-    }
-
-    // 3. Coba: /account/{funderAddress} (Info dasar akun)
-    if (!found) {
-      try {
-        const path = `/account/${creds.funderAddress}`
-        const headers = await buildClobHeaders(creds, 'GET', path, '')
-        const res = await fetch(`${CLOB_HOST}${path}`, { headers, cache: 'no-store' })
-        
-        if (res.ok) {
-          const data = await res.json()
-          // Cek field yang mungkin ada
-          if (data.balance) {
-            balance = parseFloat(data.balance) / 1e6
-            found = true
-          } else if (data.availableBalance) {
-            balance = parseFloat(data.availableBalance) / 1e6
-            found = true
-          }
-        }
-      } catch (e) { console.error(e) }
-    }
-
-    if (!found) {
-      console.log("[Portfolio API] Could not fetch balance from CLOB. Defaulting to 0.")
-      // Jika gagal total, kembalikan 0 atau coba fetch dari on-chain (lebih berat)
-    }
-
-    const stats = {
-      total_balance: balance,
-      available_balance: balance,
-      total_value: balance,
-      total_pnl: 0,
-      total_pnl_pct: 0,
-      today_pnl: 0,
-      today_trades: 0,
-      win_rate: 0,
-      open_positions: 0,
-    }
-
-    return NextResponse.json({
-      configured: true,
-      balance: balance,
-      stats: stats,
-      timestamp: new Date().toISOString(),
+    // --- MENCOBA ENDPOINT ACCOUNT ME ---
+    // Endpoint ini mengembalikan data akun pribadi berdasarkan API Key yang digunakan
+    const path = '/account/me'
+    const headers = await buildClobHeaders(creds, 'GET', path, '')
+    
+    const res = await fetch(`${CLOB_HOST}${path}`, {
+      method: 'GET',
+      headers: headers,
+      cache: 'no-store'
     })
+
+    if (!res.ok) {
+      console.log(`[Portfolio API] Failed ${path}: ${res.status} ${res.statusText}`)
+      // Jika /account/me gagal, coba fallback ke /account
+      const fallbackPath = '/account'
+      const fallbackHeaders = await buildClobHeaders(creds, 'GET', fallbackPath, '')
+      const fallbackRes = await fetch(`${CLOB_HOST}${fallbackPath}`, {
+        method: 'GET',
+        headers: fallbackHeaders,
+        cache: 'no-store'
+      })
+
+      if (!fallbackRes.ok) {
+        console.log(`[Portfolio API] Failed ${fallbackPath}: ${fallbackRes.status} ${fallbackRes.statusText}`)
+        return NextResponse.json({
+          configured: true,
+          balance: 0,
+          stats: defaultPortfolio(),
+          warning: 'Balance service unavailable',
+        })
+      }
+      
+      // Proses data dari /account
+      const data = await fallbackRes.json()
+      const balance = processBalance(data)
+      return generateResponse(balance)
+    }
+
+    // Proses data dari /account/me
+    const data = await res.json()
+    const balance = processBalance(data)
+    
+    return generateResponse(balance)
 
   } catch (error: any) {
     console.error('[Portfolio API] Error:', error)
     return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+}
+
+// Helper untuk mengambil balance dari data respons
+function processBalance(data: any): number {
+  // Polymarket biasanya menyimpan USDC dalam satuan kecil (1e6)
+  // Coba cari field 'balance' atau 'availableBalance'
+  let balanceStr = '0'
+  
+  if (data.balance) {
+    balanceStr = data.balance
+  } else if (data.availableBalance) {
+    balanceStr = data.availableBalance
+  } else if (data.cash) {
+    balanceStr = data.cash
+  } else if (data.walletBalance) {
+    balanceStr = data.walletBalance
+  }
+
+  // Konversi dari string/number ke float, lalu bagi 1e6 (USDC decimals)
+  let balance = parseFloat(balanceStr)
+  if (balance > 1000000) { // Jika nilai sangat besar, asumsikan dalam satuan kecil
+    balance = balance / 1e6
+  }
+  
+  return balance
+}
+
+// Helper untuk generate response JSON
+function generateResponse(balance: number) {
+  const stats = {
+    total_balance: balance,
+    available_balance: balance,
+    total_value: balance,
+    total_pnl: 0,
+    total_pnl_pct: 0,
+    today_pnl: 0,
+    today_trades: 0,
+    win_rate: 0,
+    open_positions: 0,
+  }
+
+  return NextResponse.json({
+    configured: true,
+    balance: balance,
+    stats: stats,
+    timestamp: new Date().toISOString(),
+  })
+}
+
+function defaultPortfolio() {
+  return {
+    total_balance: 0,
+    available_balance: 0,
+    total_value: 0,
+    total_pnl: 0,
+    total_pnl_pct: 0,
+    today_pnl: 0,
+    today_trades: 0,
+    win_rate: 0,
+    open_positions: 0,
   }
 }
