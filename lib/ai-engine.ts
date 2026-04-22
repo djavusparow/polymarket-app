@@ -294,16 +294,17 @@ export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedS
 
     console.log(`[analyzeMarket] Active providers: ${activeProviders.map(p => p.name).join(', ')}`)
 
-    // 3. Jalankan 3 Analisis Paralel (Market, Risk, Sentiment)
-    // Kita rotasi provider jika ada lebih dari 3, atau ulangi jika kurang dari 3
+    // 3. Jalankan 4 Analisis Paralel (Market, Risk, Sentiment, dan tambahan)
+    // Kita rotasi provider jika ada lebih dari 1, atau ulangi jika kurang dari 4
     const getProvider = (index: number) => activeProviders[index % activeProviders.length]
     
     const results = await Promise.all([
-  callLLM(providers[0], PROMPTS.MARKET,    fullContext),
-  callLLM(providers[1], PROMPTS.RISK,     fullContext),
-  callLLM(providers[2], PROMPTS.SENTIMENT,fullContext),
-  ...(providers[3] ? [callLLM(providers[3], PROMPTS.MARKET, fullContext)] : [])
-]);
+      callLLM(getProvider(0), PROMPTS.MARKET,    fullContext),
+      callLLM(getProvider(1), PROMPTS.RISK,     fullContext),
+      callLLM(getProvider(2), PROMPTS.SENTIMENT,fullContext),
+      // Tambahan untuk ke-4: menggunakan provider ke-3 (atau perulangan jika activeProviders < 4)
+      callLLM(getProvider(3), PROMPTS.MARKET,   fullContext) 
+    ])
 
     // 4. Gabungkan hasil
     const analyses = results.filter(Boolean) as AIAnalysis[]
