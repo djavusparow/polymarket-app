@@ -1,9 +1,12 @@
+// lib/trade-engine.ts
+
 import type {
   Trade,
   CombinedSignal,
   TradingSettings,
   PortfolioStats,
   AccountCredentials,
+  SignalDirection
 } from './types'
 
 const TRADES_KEY = 'polytrade_trades'
@@ -138,6 +141,9 @@ export function calculateTradePnL(trade: Trade): {
   pnl_pct: number
 } {
   const currentPrice = trade.current_price ?? trade.entry_price
+  // Formula: (Harga Jual - Harga Beli) * Jumlah Saham
+  // Harga Jual = currentPrice, Harga Beli = entry_price
+  // Jumlah Saham = size / entry_price
   const shares = trade.size / trade.entry_price
   const pnl = (currentPrice - trade.entry_price) * shares
   const pnl_pct = ((currentPrice - trade.entry_price) / trade.entry_price) * 100
@@ -153,12 +159,14 @@ export function calculatePortfolioStats(): PortfolioStats {
     ['CLOSED', 'STOP_LOSS', 'TAKE_PROFIT'].includes(t.status)
   )
 
+  // Hitung P&L dari trade yang sudah ditutup (Closed)
   const totalPnl = closedTrades.reduce((sum, t) => {
     const exitPrice = t.exit_price ?? t.entry_price
     const shares = t.size / t.entry_price
     return sum + (exitPrice - t.entry_price) * shares
   }, 0)
 
+  // P&L Hari Ini
   const todayStart = new Date().setHours(0, 0, 0, 0)
   const todayPnl = closedTrades
     .filter((t) => (t.closed_at ?? 0) >= todayStart)
@@ -168,6 +176,7 @@ export function calculatePortfolioStats(): PortfolioStats {
       return sum + (exitPrice - t.entry_price) * shares
     }, 0)
 
+  // Win Rate
   const winners = closedTrades.filter((t) => {
     const exitPrice = t.exit_price ?? t.entry_price
     const shares = t.size / t.entry_price
@@ -176,14 +185,18 @@ export function calculatePortfolioStats(): PortfolioStats {
 
   const winRate = closedTrades.length > 0 ? (winners / closedTrades.length) * 100 : 0
 
+  // Hari Ini (Trades yang dibuka hari ini)
   const todayTrades = trades.filter((t) => t.opened_at >= todayStart).length
 
+  // **PERHATIAN**: Balance saat ini masih 0 karena data real-time
+  // balance didapat dari API /api/portfolio, bukan dari perhitungan lokal ini.
+  // Namun P&L dihitung dari lokal history trades.
   return {
-    total_balance: 0,
-    available_balance: 0,
+    total_balance: 0, // Akan di-overwrite oleh live data dari API
+    available_balance: 0, // Akan di-overwrite oleh live data dari API
     total_value: 0,
     total_pnl: totalPnl,
-    total_pnl_pct: 0,
+    total_pnl_pct: totalPnl > 0 ? (totalPnl / (trades.reduce((sum, t) => sum + t.size, 0) || 1)) * 100 : 0,
     today_pnl: todayPnl,
     today_trades: todayTrades,
     win_rate: winRate,
@@ -232,6 +245,7 @@ export async function executeAutoTrade(
   settings: TradingSettings,
   retryCount = 0
 ): Promise<{ success: boolean; trade?: Trade; error?: string }> {
+  // 1. Validasi Settings
   if (!settings.auto_trade_enabled) {
     return { success: false, error: 'Auto trading disabled' }
   }
@@ -242,6 +256,7 @@ export async function executeAutoTrade(
     }
   }
 
+  // 2. Validasi Limit (Open Positions & Daily Trades)
   const openTrades = getOpenTrades()
   if (openTrades.length >= settings.max_open_positions) {
     return { success: false, error: 'Maximum open positions reached' }
@@ -253,15 +268,19 @@ export async function executeAutoTrade(
     return { success: false, error: 'Daily trade limit reached' }
   }
 
+  // 3. Hitung Ukuran Trade
   const confidenceMultiplier = Math.min(signal.confidence / 100, 1)
   const tradeSize = Math.round(
     settings.min_trade_size +
       (settings.max_trade_size - settings.min_trade_size) * confidenceMultiplier
   )
 
+  // 4. Tentukan Harga Target (Price)
+  // Polymarket menggunakan harga 0.00 - 1.00
   const price =
     signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice
 
+  // 5. Ambil Kredensial
   const storedCreds = getCredentials()
   if (!storedCreds) {
     return { success: false, error: 'API credentials not configured' }
@@ -272,18 +291,12 @@ export async function executeAutoTrade(
     return { success: false, error: credCheck.error }
   }
 
-  // ─── Gunakan signature type yang tepat berdasarkan wallet type ─────────────
-  const clobCreds = {
-    apiKey: storedCreds.api_key,
-    apiSecret: storedCreds.api_secret,
-    apiPassphrase: storedCreds.api_passphrase,
-    funderAddress: storedCreds.funder_address,
-    signatureType: storedCreds.signature_type ?? 0, // Default ke EOA
-  }
-
+  // 6. Siapkan Payload untuk API Route
   const stopLossPct = settings.default_stop_loss / 100
   const takeProfitPct = settings.default_take_profit / 100
 
+  // Logic Stop/Take: Jika Side YES, Stop Loss lebih rendah, Take Profit lebih tinggi
+  // Jika Side NO (Sell), Stop Loss lebih tinggi, Take Profit lebih rendah
   const stopLossPrice =
     signal.recommendedSide === 'YES'
       ? Math.max(0.01, price - price * stopLossPct)
@@ -301,16 +314,22 @@ export async function executeAutoTrade(
       body: JSON.stringify({
         market_id: signal.market_id,
         question: signal.question,
-        side: signal.recommendedSide,
+        side: signal.recommendedSide, // 'YES' atau 'NO'
         size: tradeSize,
-        price,
+        price: price,
         signal_confidence: signal.confidence,
         ai_rationale: signal.analyses.map((a) => a.rationale).join(' | '),
         stop_loss_pct: settings.default_stop_loss,
         take_profit_pct: settings.default_take_profit,
         stop_loss_price: stopLossPrice,
         take_profit_price: takeProfitPrice,
-        credentials: clobCreds,
+        credentials: {
+          apiKey: storedCreds.api_key,
+          apiSecret: storedCreds.api_secret,
+          apiPassphrase: storedCreds.api_passphrase,
+          funderAddress: storedCreds.funder_address,
+          signatureType: storedCreds.signature_type ?? 0,
+        },
       }),
     })
 
@@ -323,17 +342,12 @@ export async function executeAutoTrade(
       }
     }
 
+    // Mapping Token ID berdasarkan side
+    // Biasanya token_ids[0] = YES, token_ids[1] = NO
     const expectedTokenId =
       signal.recommendedSide === 'YES'
-        ? result.token_ids?.[0] ?? ''
+        ? result.token_ids?.[0] ?? result.token_id ?? ''
         : result.token_ids?.[1] ?? ''
-
-    if (!expectedTokenId) {
-      return {
-        success: false,
-        error: 'Could not determine correct token ID for the chosen side',
-      }
-    }
 
     const trade: Trade = {
       id: result.trade_id ?? crypto.randomUUID(),
@@ -382,7 +396,7 @@ export function updateTradeWithPrice(
 
   const trade = trades[idx]
   
-  // Fix: Handle potentially undefined stop_loss/take_profit using fallback values
+  // Fallback nilai default jika stop_loss/take_profit belum ada
   const stopLoss = trade.stop_loss ?? (trade.side === 'YES' ? 0 : 1)
   const takeProfit = trade.take_profit ?? (trade.side === 'YES' ? 1 : 0)
 
@@ -390,42 +404,35 @@ export function updateTradeWithPrice(
   const pnl = (newPrice - trade.entry_price) * shares
   const pnl_pct = ((newPrice - trade.entry_price) / trade.entry_price) * 100
 
-  const newStatus = (() => {
-    // Use the fallback values for comparison
-    if (
-      (trade.side === 'YES' && newPrice <= stopLoss) ||
-      (trade.side === 'NO' && newPrice >= stopLoss)
-    ) {
-      return 'STOP_LOSS'
-    }
-    if (
-      (trade.side === 'YES' && newPrice >= takeProfit) ||
-      (trade.side === 'NO' && newPrice <= takeProfit)
-    ) {
-      return 'TAKE_PROFIT'
-    }
-    return trade.status
-  })()
+  let newStatus = trade.status
 
-  // Apply updates: if status changes to STOP_LOSS or TAKE_PROFIT, record exit details
-  if (newStatus !== trade.status && ['STOP_LOSS', 'TAKE_PROFIT'].includes(newStatus)) {
-    trades[idx] = {
-      ...trade,
-      current_price: newPrice,
+  // Cek Stop Loss / Take Profit
+  // YES: Stop jika harga turun di bawah stopLoss, Take Profit jika naik di atas takeProfit
+  // NO: Stop jika harga naik di atas stopLoss, Take Profit jika turun di bawah takeProfit
+  if (
+    (trade.side === 'YES' && newPrice <= stopLoss) ||
+    (trade.side === 'NO' && newPrice >= stopLoss)
+  ) {
+    newStatus = 'STOP_LOSS'
+  } else if (
+    (trade.side === 'YES' && newPrice >= takeProfit) ||
+    (trade.side === 'NO' && newPrice <= takeProfit)
+  ) {
+    newStatus = 'TAKE_PROFIT'
+  }
+
+  const isClosed = ['STOP_LOSS', 'TAKE_PROFIT', 'CLOSED'].includes(newStatus)
+  
+  trades[idx] = {
+    ...trade,
+    current_price: newPrice,
+    pnl,
+    pnl_pct,
+    status: newStatus,
+    ...(isClosed && {
       exit_price: newPrice,
       closed_at: Date.now(),
-      pnl,
-      pnl_pct,
-      status: newStatus,
-    }
-  } else {
-    trades[idx] = {
-      ...trade,
-      current_price: newPrice,
-      pnl,
-      pnl_pct,
-      status: newStatus,
-    }
+    }),
   }
 
   saveTrades(trades)
