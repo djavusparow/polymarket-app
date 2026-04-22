@@ -10,7 +10,7 @@ const CTF_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'
 const NEG_RISK_EXCHANGE = '0xC5d563A36AE78145C45a50134d48A1215220f80a'
 const CHAIN_ID = 137n
 
-// --- Minimal Keccak256 Implementation ---
+// --- Keccak256 Implementation ---
 function keccak256(input: Uint8Array): Uint8Array {
   const RATE = 136
   const RC: [number, number][] = [
@@ -140,15 +140,16 @@ function signDigest(privateKeyHex: string, digest: Uint8Array): string {
 function buildOrderPayload(params: any): any {
   const { privateKey, funderAddress, tokenId, price, size, side, signatureType, negRisk } = params
 
-  // Validasi Kritis: Cek apakah parameter kosong
-  if (!tokenId || tokenId === '') throw new Error('Token ID is missing or empty')
+  // Validasi Kritis
+  if (!tokenId || typeof tokenId !== 'string' || tokenId === '') {
+    throw new Error(`Token ID must be a non-empty string. Received: ${typeof tokenId} (${tokenId})`)
+  }
   if (!funderAddress || funderAddress === '') throw new Error('Funder Address is missing')
   if (!privateKey || privateKey === '') throw new Error('Private Key is missing')
 
   const priceNum = Number(price)
   const sizeNum = Number(size)
   
-  // Validasi Angka
   if (isNaN(priceNum) || priceNum <= 0) throw new Error(`Invalid price: ${price}`)
   if (isNaN(sizeNum) || sizeNum <= 0) throw new Error(`Invalid size: ${size}`)
 
@@ -156,9 +157,6 @@ function buildOrderPayload(params: any): any {
   const priceBig    = BigInt(Math.round(priceNum * 1_000_000))
   const sizeBig     = BigInt(Math.round(sizeNum  * 1_000_000))
   
-  // Cek apakah hasil perkalian kosong (harusnya tidak pernah terjadi jika size > 0)
-  if (priceBig === 0n || sizeBig === 0n) throw new Error('Calculated amounts are zero')
-
   const makerAmount = side === 'BUY'  ? (priceBig * sizeBig) / SCALE : sizeBig
   const takerAmount = side === 'BUY'  ? sizeBig : (priceBig * sizeBig) / SCALE
   
@@ -172,7 +170,7 @@ function buildOrderPayload(params: any): any {
     maker: funderAddress, 
     signer: signerAddress,
     taker: '0x0000000000000000000000000000000000000000',
-    tokenId: BigInt(tokenId), // Pastikan tokenId adalah string valid
+    tokenId: BigInt(tokenId),
     makerAmount, 
     takerAmount,
     expiration: 0n, 
@@ -194,7 +192,7 @@ function buildOrderPayload(params: any): any {
       maker:        funderAddress,
       signer:       signerAddress,
       taker:        '0x0000000000000000000000000000000000000000',
-      tokenID:      tokenId, // API Polymarket menggunakan 'tokenID'
+      tokenID:      tokenId,
       makerAmount:  makerAmount.toString(),
       takerAmount:  takerAmount.toString(),
       expiration:   '0',
@@ -236,17 +234,30 @@ export async function POST(request: Request) {
     const market = await marketRes.json()
 
     // 3. Determine Token ID
-    const tokenIds = market.clobTokenIds ?? []
+    let tokenIds = market.clobTokenIds ?? []
+    
+    // Handle case where clobTokenIds might be a string or not an array
+    if (!Array.isArray(tokenIds)) {
+        console.warn(`[api/execute] clobTokenIds is not an array: ${JSON.stringify(tokenIds)}`)
+        tokenIds = []
+    }
+
     if (tokenIds.length < 2) {
-      console.error(`[api/execute] Invalid tokenIds: ${JSON.stringify(tokenIds)}`)
-      return NextResponse.json({ error: 'Market token IDs not found.' }, { status: 400 })
+      console.error(`[api/execute] Invalid tokenIds length: ${tokenIds.length}. Data: ${JSON.stringify(tokenIds)}`)
+      return NextResponse.json({ error: 'Market token IDs not found or insufficient.' }, { status: 400 })
     }
 
     // Polymarket: tokenIds[0] = YES, tokenIds[1] = NO
-    const tokenId = side === 'YES' ? tokenIds[0] : tokenIds[1]
-    
+    // Validasi agar tokenId berupa string
+    let tokenIdStr: string = ''
+    if (side === 'YES') {
+        tokenIdStr = String(tokenIds[0])
+    } else {
+        tokenIdStr = String(tokenIds[1])
+    }
+
     // VALIDASI FINAL TOKEN ID SEBELUM MASUK BUILDER
-    if (!tokenId || tokenId === '') {
+    if (!tokenIdStr || tokenIdStr === '') {
        console.error(`[api/execute] Resolved tokenId is empty. Side: ${side}, IDs: ${JSON.stringify(tokenIds)}`)
        return NextResponse.json({ error: 'Resolved Token ID is empty.' }, { status: 400 })
     }
@@ -264,12 +275,12 @@ export async function POST(request: Request) {
     if (size <= 0) return NextResponse.json({ error: 'Size invalid' }, { status: 400 })
 
     // 5. Build & Send Order
-    console.log(`[api/execute] Building order for tokenId: ${tokenId}`)
+    console.log(`[api/execute] Building order for tokenId: ${tokenIdStr} (Type: ${typeof tokenIdStr})`)
     
     const payload = buildOrderPayload({
       privateKey, 
       funderAddress: creds.funderAddress,
-      tokenId, 
+      tokenId: tokenIdStr, 
       price: clampedPrice, 
       size: Number(size),
       side: side === 'YES' ? 'BUY' : 'SELL',
@@ -306,7 +317,7 @@ export async function POST(request: Request) {
       order_id: orderId,
       condition_id: market.condition_id ?? market_id,
       token_ids: [tokenIds[0], tokenIds[1]],
-      token_id: tokenId,
+      token_id: tokenIdStr,
       status: orderData?.status ?? 'LIVE',
       price: clampedPrice,
       size,
