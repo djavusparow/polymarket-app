@@ -1,18 +1,26 @@
-import type { PolymarketMarket, AIAnalysis, CombinedSignal, AIModel, SignalDirection } from './types'
-import { parseOutcomePrice } from './polymarket'
+import type {
+  PolymarketMarket,
+  AIAnalysis,
+  CombinedSignal,
+  AIModel,
+  SignalDirection,
+} from './types';
+import { parseOutcomePrice } from './polymarket';
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
 // 1. ENVIRONMENT VARIABLES
-// ─────────────────────────────────────────────────────────────────────────────
-const NEWS_API_KEY = process.env.NEWSAPI_KEY || ''
-const BLACKBOX_API_KEY = process.env.BLACKBOX_API_KEY || ''
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
-const GROQ_API_KEY = process.env.GROQ_API_KEY || ''
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || ''
+// ────────────────────────────────────────────────────────────────────────
+const NEWS_API_KEY = process.env.NEWSAPI_KEY || '';
+const BLACKBOX_API_KEY = process.env.BLACKBOX_API_KEY || '';
+// Optional – Blackbox *customerId* (perlu untuk beberapa akun)
+const BLACKBOX_CUSTOMER_ID = process.env.BLACKBOX_CUSTOMER_ID || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
 // 2. PROVIDERS CONFIGURATION
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
 const LLM_PROVIDERS = [
   {
     name: 'deepseek',
@@ -20,17 +28,15 @@ const LLM_PROVIDERS = [
     model: 'deepseek-chat',
     keyHeader: 'Authorization',
     keyPrefix: 'Bearer ',
-    key: DEEPSEEK_API_KEY
+    key: DEEPSEEK_API_KEY,
   },
   {
     name: 'blackbox',
-    // Menggunakan endpoint chat resmi Blackbox
     endpoint: 'https://llm.blackbox.ai/chat/completions',
-    // Model default Blackbox yang stabil
-    model: 'claude-3.5-sonnet', 
+    model: 'claude-3.5-sonnet',
     keyHeader: 'Authorization',
     keyPrefix: 'Bearer ',
-    key: BLACKBOX_API_KEY
+    key: BLACKBOX_API_KEY,
   },
   {
     name: 'openai',
@@ -38,21 +44,21 @@ const LLM_PROVIDERS = [
     model: 'gpt-4o-mini',
     keyHeader: 'Authorization',
     keyPrefix: 'Bearer ',
-    key: OPENAI_API_KEY
+    key: OPENAI_API_KEY,
   },
   {
     name: 'groq',
     endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-    model: 'llama-3.1-8b-instant', 
+    model: 'llama-3.1-8b-instant',
     keyHeader: 'Authorization',
     keyPrefix: 'Bearer ',
-    key: GROQ_API_KEY
-  }
-] as const
+    key: GROQ_API_KEY,
+  },
+] as const;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 3. PROMPTS
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
+// 3. PROMPTS (termasuk analisis berita)
+// ────────────────────────────────────────────────────────────────────────
 const PROMPTS = {
   MARKET: `You are an expert prediction market analyst specializing in Polymarket.
 Your role is to analyze binary outcome markets and provide trading signals.
@@ -69,7 +75,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
 }`,
 
   RISK: `You are a quantitative risk analyst for prediction market trading.
-Your role is to evaluate market risks and provide risk-adjusted trading signals.
+Your role is to evaluate market risks and provide risk‑adjusted trading signals.
 Respond ONLY with valid JSON in this exact format:
 {
   "signal": "BUY" | "SELL" | "HOLD",
@@ -96,9 +102,9 @@ Respond ONLY with valid JSON in this exact format:
   "take_profit_pct": <number 0-200>
 }`,
 
-  // Prompt khusus untuk analisis berita NewsAPI (seperti yang Anda minta)
+  // Prompt khusus untuk menilai dampak berita (NewsAPI)
   NEWS_ANALYST: `You are a news analyst for prediction markets.
-Your role is to analyze recent news headlines and assess their impact on the market outcome.
+Your role is to evaluate recent headlines and decide how they affect the market outcome.
 Respond ONLY with valid JSON in this exact format:
 {
   "signal": "BUY" | "SELL" | "HOLD",
@@ -112,65 +118,58 @@ Respond ONLY with valid JSON in this exact format:
 }`
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 4. NEWS FETCHING (NEWSAPI INTEGRATION)
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
+// 4. NEWS FETCHING (NewsAPI)
+// ────────────────────────────────────────────────────────────────────────
 async function fetchNews(query: string): Promise<string> {
-  if (!NEWS_API_KEY) return ''
-  
+  if (!NEWS_API_KEY) return '';
   try {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 10000)
-
-    // Mengambil berita terbaru untuk query pasar
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 10_000);
     const res = await fetch(
-      `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&language=en&pageSize=5&apiKey=${NEWS_API_KEY}`,
-      { signal: controller.signal }
-    )
-    clearTimeout(timeoutId)
-
-    if (!res.ok) return ''
-    
-    const data = await res.json()
-    if (!data.articles || data.articles.length === 0) return ''
-
-    // Format berita menjadi string ringkas
-    const recent = data.articles
+      `https://newsapi.org/v2/everything?q=${encodeURIComponent(
+        query
+      )}&sortBy=publishedAt&language=en&pageSize=5&apiKey=${NEWS_API_KEY}`,
+      { signal: ctrl.signal }
+    );
+    clearTimeout(timeoutId);
+    if (!res.ok) return '';
+    const data = await res.json();
+    if (!data.articles?.length) return '';
+    const lines = data.articles
       .slice(0, 3)
-      .map((a: any) => `- ${a.title} (Source: ${a.source?.name || 'Unknown'})`)
-      .join('\n')
-    
-    return `\n\nLATEST NEWS:\n${recent}`
+      .map((a: any) => `- ${a.title} (Source: ${a.source?.name || 'unknown'})`);
+    return `\n\nLATEST NEWS:\n${lines.join('\n')}`;
   } catch (e) {
-    console.warn('[NewsAPI] Fetch error:', e)
-    return ''
+    console.warn('[NewsAPI] fetch error:', e);
+    return '';
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 5. CALL LLM FUNCTION (DENGAN PERBAIKAN DEEPSEEK & BLACKBOX)
-// ─────────────────────────────────────────────────────────────────────────────
-async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, context: string): Promise<AIAnalysis | null> {
-  if (!provider.key || provider.key.trim() === '') {
-    // Jangan log error karena mungkin ini memang provider yang tidak di-set
-    return null
-  }
+// ────────────────────────────────────────────────────────────────────────
+// 5. CALL LLM – penanganan DeepSeek + Blackbox, parsing toleran
+// ────────────────────────────────────────────────────────────────────────
+async function callLLM(
+  provider: typeof LLM_PROVIDERS[number],
+  prompt: string,
+  context: string
+): Promise<AIAnalysis | null> {
+  if (!provider.key || provider.key.trim() === '') return null;
 
-  console.log(`[callLLM] ${provider.name} → ${provider.model}`)
-  
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 45000) // Timeout 45 detik
+  console.log(`[callLLM] ${provider.name} → ${provider.model}`);
+
+  const ctrl = new AbortController();
+  const timeoutId = setTimeout(() => ctrl.abort(), 45_000); // 45 s timeout
 
   try {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      [provider.keyHeader]: `${provider.keyPrefix}${provider.key}`
-    }
+      [provider.keyHeader]: `${provider.keyPrefix}${provider.key}`,
+    };
 
-    // Spesifik untuk Blackbox (customerId opsional, tapi jika ada error 402, coba tanpa ini)
-    if (provider.name === 'blackbox') {
-      // Hapus baris ini jika Anda yakin key Anda adalah key produksi langsung
-      // headers['customerId'] = 'cus_UIDAXBwD6XwhtQ' 
+    // ---- Blackbox: tambahkan customerId bila tersedia ----
+    if (provider.name === 'blackbox' && BLACKBOX_CUSTOMER_ID) {
+      headers['customerId'] = BLACKBOX_CUSTOMER_ID;
     }
 
     const res = await fetch(provider.endpoint, {
@@ -180,71 +179,89 @@ async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, c
         model: provider.model,
         messages: [
           { role: 'system', content: prompt },
-          { role: 'user', content: context }
+          { role: 'user', content: context },
         ],
         temperature: 0.3,
         max_tokens: 150,
       }),
-      signal: controller.signal,
-    })
-    
-    clearTimeout(timeoutId)
+      signal: ctrl.signal,
+    });
 
-    // Cek response status
+    clearTimeout(timeoutId);
+
     if (!res.ok) {
-      const errText = await res.text()
-      // Log ringkas saja, jangan panic
-      console.error(`[${provider.name}] ❌ HTTP ${res.status}: ${errText.slice(0, 100)}...`)
-      return null
+      const txt = await res.text();
+      console.error(`[${provider.name}] ❌ HTTP ${res.status}: ${txt.slice(0, 120)}...`);
+      return null;
     }
 
-    const data = await res.json()
-    const content = data?.choices?.[0]?.message?.content ?? ''
-    
-    // PERBAIKAN UTAMA UNTUK DEEPSEEK:
-    // Deepseek sering mengirim teks pembuka sebelum JSON. 
-    // Kita gunakan regex yang lebih kuat untuk ekstrak JSON.
-    let clean = content.trim()
-    
-    // Coba cari blok JSON yang diapit ```
-    const jsonBlockMatch = clean.match(/```json\s*([\s\S]*?)\s*```/);
-    if (jsonBlockMatch) {
-      clean = jsonBlockMatch[1];
-    } else {
-      // Coba cari blok JSON tanpa label
-      const blockMatch = clean.match(/```([\s\S]*?)```/);
-      if (blockMatch) {
-        clean = blockMatch[1];
-      } else {
-        // Jika tidak ada ```, coba cari objek JSON mulai dari { pertama hingga } terakhir
-        const start = clean.indexOf('{');
-        const end = clean.lastIndexOf('}');
-        if (start !== -1 && end !== -1 && end > start) {
-          clean = clean.substring(start, end + 1);
+    const data = await res.json();
+    const raw = data?.choices?.[0]?.message?.content ?? '';
+
+    // ---------- EXTRACT JSON (toleran) ----------
+    let jsonStr = raw.trim();
+
+    // 1️⃣ Cari blok ```json ... ```
+    const fencedJson = jsonStr.match(/```json\s*([\s\S]*?)\s*```/);
+    if (fencedJson) jsonStr = fencedJson[1];
+    else {
+      // 2️⃣ Cari blok ``` ... ```
+      const fenced = jsonStr.match(/```([\s\S]*?)```/);
+      if (fenced) jsonStr = fenced[1];
+      else {
+        // 3️⃣ Cari objek JSON pertama { … } terakhir }
+        const first = jsonStr.indexOf('{');
+        const last = jsonStr.lastIndexOf('}');
+        if (first !== -1 && last !== -1 && last > first) {
+          jsonStr = jsonStr.substring(first, last + 1);
         }
       }
     }
-    
-    // Bersihkan sisa karakter aneh
-    clean = clean.replace(/\n/g, '').replace(/\r/g, '').trim()
 
-    let parsed: any
+    // 4️⃣ Hapus karakter yang tak diperlukan (newline, carriage‑return)
+    jsonStr = jsonStr.replace(/\r?\n/g, '').trim();
+
+    // 5️⃣ Jika masih tidak berakhir dengan '}' – potong sampai brace terakhir
+    const lastBrace = jsonStr.lastIndexOf('}');
+    if (lastBrace !== -1 && lastBrace < jsonStr.length - 1) {
+      jsonStr = jsonStr.substring(0, lastBrace + 1);
+    }
+
+    let parsed: any;
     try {
-      parsed = JSON.parse(clean)
-    } catch (parseErr) {
-      console.error(`[${provider.name}] ❌ JSON Parse Error. Raw content (first 200 chars):`, content.substring(0, 200))
-      return null
+      parsed = JSON.parse(jsonStr);
+    } catch (e) {
+      console.error(
+        `[${provider.name}] ❌ JSON Parse Error. Raw content (first 200 chars):`,
+        raw.substring(0, 200)
+      );
+      // ---- Fallback ringan: ekstrak field secara regex ----
+      const fallback = (key: string) => {
+        const m = raw.match(new RegExp(`"${key}"\\s*:\\s*"?([^",}\\n]+)"?`, 'i'));
+        return m ? m[1].trim() : undefined;
+      };
+      const signal = fallback('signal') as SignalDirection | undefined;
+      const confidence = Number(fallback('confidence'));
+      if (!signal || isNaN(confidence)) return null;
+      parsed = {
+        signal,
+        confidence,
+        rationale: fallback('rationale') || '',
+        true_probability_yes: Number(fallback('true_probability_yes')) || 0.5,
+        edge: Number(fallback('edge')) || 0,
+        target_price: Number(fallback('target_price')) || 0.5,
+        stop_loss_pct: Number(fallback('stop_loss_pct')) || 20,
+        take_profit_pct: Number(fallback('take_profit_pct')) || 50,
+      };
     }
 
-    // Validasi field wajib
-    if (!parsed.signal || !['BUY', 'SELL', 'HOLD'].includes(parsed.signal)) {
-      return null
-    }
-    if (typeof parsed.confidence !== 'number' || parsed.confidence < 0 || parsed.confidence > 100) {
-      return null
-    }
+    // --------‑ Validasi wajib ---------
+    if (!parsed.signal || !['BUY', 'SELL', 'HOLD'].includes(parsed.signal))
+      return null;
+    if (typeof parsed.confidence !== 'number' || parsed.confidence < 0 || parsed.confidence > 100)
+      return null;
 
-    console.log(`[${provider.name}] ✅ Success! Confidence: ${parsed.confidence}`)
+    console.log(`[${provider.name}] ✅ Success! Confidence: ${parsed.confidence}`);
 
     return {
       model: provider.name as AIModel,
@@ -254,89 +271,88 @@ async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, c
       targetPrice: Number(parsed.target_price) || 0.5,
       stopLoss: Number(parsed.stop_loss_pct) || 20,
       takeProfit: Number(parsed.take_profit_pct) || 50,
-      timestamp: Date.now()
-    }
-  } catch (e) {
-    clearTimeout(timeoutId)
-    console.error(`[${provider.name}] ❌ Error:`, e)
-    return null
+      timestamp: Date.now(),
+    };
+  } catch (err) {
+    clearTimeout(timeoutId);
+    console.error(`[${provider.name}] ❌ Error:`, err);
+    return null;
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
 // 6. ENSEMBLE LOGIC
-// ─────────────────────────────────────────────────────────────────────────────
-function ensemble(analyses: AIAnalysis[]): { direction: SignalDirection; confidence: number; recommendedSide: 'YES' | 'NO' } {
-  const valid = analyses.filter(a => a.confidence > 0)
-  if (!valid.length) return { direction: 'HOLD', confidence: 0, recommendedSide: 'YES' }
+// ────────────────────────────────────────────────────────────────────────
+function ensemble(
+  analyses: AIAnalysis[]
+): { direction: SignalDirection; confidence: number; recommendedSide: 'YES' | 'NO' } {
+  const valid = analyses.filter((a) => a.confidence > 0);
+  if (!valid.length) return { direction: 'HOLD', confidence: 0, recommendedSide: 'YES' };
 
-  const buyScore = valid.filter(a => a.signal === 'BUY').reduce((sum, a) => sum + a.confidence, 0)
-  const sellScore = valid.filter(a => a.signal === 'SELL').reduce((sum, a) => sum + a.confidence, 0)
-  const totalScore = buyScore + sellScore
-  const avgConf = valid.reduce((sum, a) => sum + a.confidence, 0) / valid.length
+  const buyScore = valid.filter((a) => a.signal === 'BUY').reduce((s, a) => s + a.confidence, 0);
+  const sellScore = valid.filter((a) => a.signal === 'SELL').reduce((s, a) => s + a.confidence, 0);
+  const totalScore = buyScore + sellScore;
+  const avgConf = valid.reduce((s, a) => s + a.confidence, 0) / valid.length;
 
   if (totalScore === 0) {
-    return { direction: 'HOLD', confidence: Math.round(avgConf * 0.5), recommendedSide: 'YES' }
+    return { direction: 'HOLD', confidence: Math.round(avgConf * 0.5), recommendedSide: 'YES' };
   }
 
   if (buyScore > sellScore && buyScore / totalScore > 0.4) {
-    return { direction: 'BUY', confidence: Math.round((buyScore / totalScore) * avgConf), recommendedSide: 'YES' }
+    return { direction: 'BUY', confidence: Math.round((buyScore / totalScore) * avgConf), recommendedSide: 'YES' };
   }
   if (sellScore > buyScore && sellScore / totalScore > 0.4) {
-    return { direction: 'SELL', confidence: Math.round((sellScore / totalScore) * avgConf), recommendedSide: 'NO' }
+    return { direction: 'SELL', confidence: Math.round((sellScore / totalScore) * avgConf), recommendedSide: 'NO' };
   }
-  return { direction: 'HOLD', confidence: Math.round(avgConf * 0.5), recommendedSide: 'YES' }
+  return { direction: 'HOLD', confidence: Math.round(avgConf * 0.5), recommendedSide: 'YES' };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
 // 7. MAIN ANALYSIS FUNCTION
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
 export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedSignal> {
-  const startTime = Date.now()
-  console.log(`[analyzeMarket] Starting for: ${market.id}`)
-  
-  try {
-    const yesPrice = parseOutcomePrice(market.outcomePrices)
-    const baseContext = buildMarketContext(market)
-    
-    // 1. Fetch News (Menggunakan NewsAPI Key yang sudah Anda set di Vercel)
-    const news = await fetchNews(market.question)
-    const fullContext = baseContext + news
+  const start = Date.now();
+  console.log(`[analyzeMarket] Starting for: ${market.id}`);
 
-    // 2. Siapkan Provider (Hanya yang punya key)
-    const activeProviders = LLM_PROVIDERS.filter(p => p.key && p.key.trim() !== '')
-    
-    if (activeProviders.length === 0) {
-      console.error('[analyzeMarket] ❌ CRITICAL: No API keys configured!')
-      return getDefaultSignal(market, yesPrice)
+  try {
+    const yesPrice = parseOutcomePrice(market.outcomePrices);
+    const baseContext = buildMarketContext(market);
+
+    // ---- News ----
+    const news = await fetchNews(market.question);
+    const fullContext = baseContext + news; // news already appended as string
+
+    // ---- Provider list (filter yang punya key) ----
+    const activeProviders = LLM_PROVIDERS.filter((p) => p.key && p.key.trim() !== '');
+    if (!activeProviders.length) {
+      console.error('[analyzeMarket] ❌ No API keys configured!');
+      return getDefaultSignal(market, yesPrice);
     }
 
-    console.log(`[analyzeMarket] Active providers: ${activeProviders.map(p => p.name).join(', ')}`)
+    console.log(`[analyzeMarket] Active providers: ${activeProviders.map((p) => p.name).join(', ')}`);
 
-    // 3. Menjalankan 4 Analisis Paralel + 1 News Analysis (Total 5)
-    // Kita rotasi provider untuk 4 LLM utama, dan tambahkan NewsAnalyst
-    
-    const getProvider = (index: number) => activeProviders[index % activeProviders.length]
-    
+    // ---- Rotasi provider (memastikan maksimal 4 LLM) ----
+    const getProvider = (i: number) => activeProviders[i % activeProviders.length];
+
     const results = await Promise.all([
-      // 1. Market Analyst (LLM)
+      // 1️⃣ Market analyst
       callLLM(getProvider(0), PROMPTS.MARKET, fullContext),
-      // 2. Risk Analyst (LLM)
+      // 2️⃣ Risk analyst
       callLLM(getProvider(1), PROMPTS.RISK, fullContext),
-      // 3. Sentiment Analyst (LLM)
+      // 3️⃣ Sentiment analyst
       callLLM(getProvider(2), PROMPTS.SENTIMENT, fullContext),
-      // 4. LLM Tambahan (agar ada 4 LLM yang berjalan)
+      // 4️⃣ LLM ke‑4 (menggunakan kembali prompt market, sehingga selalu ada 4 panggilan LLM)
       callLLM(getProvider(3), PROMPTS.MARKET, fullContext),
-      // 5. NEWS ANALYST (Menggunakan NewsAPI + Prompt Khusus)
-      // Kita pakai provider pertama yang ada untuk memproses konteks berita ini
-      callLLM(getProvider(0), PROMPTS.NEWS_ANALYST, news || fullContext) 
-    ])
+      // 5️⃣ News analyst (pakai provider pertama; news sudah di‑string‑kan)
+      callLLM(getProvider(0), PROMPTS.NEWS_ANALYST, news || fullContext),
+    ]);
 
-    // 4. Gabungkan hasil
-    const analyses = results.filter(Boolean) as AIAnalysis[]
-    console.log(`[analyzeMarket] Completed in ${Date.now() - startTime}ms. Success: ${analyses.length}/${results.length}`)
+    const analyses = results.filter(Boolean) as AIAnalysis[];
+    console.log(
+      `[analyzeMarket] Completed in ${Date.now() - start}ms. Success: ${analyses.length}/${results.length}`
+    );
 
-    const ensembleResult = ensemble(analyses)
+    const ensembleResult = ensemble(analyses);
 
     return {
       market_id: market.id,
@@ -347,28 +363,32 @@ export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedS
       yesPrice,
       noPrice: 1 - yesPrice,
       recommendedSide: ensembleResult.recommendedSide,
-      timestamp: Date.now()
-    }
+      timestamp: Date.now(),
+    };
   } catch (e) {
-    console.error('[analyzeMarket] ERROR:', e)
-    throw e
+    console.error('[analyzeMarket] ERROR:', e);
+    throw e;
   }
 }
 
-// Helper untuk membangun context pasar
+// ────────────────────────────────────────────────────────────────────────
+// Helper: build market context string
+// ────────────────────────────────────────────────────────────────────────
 function buildMarketContext(market: PolymarketMarket): string {
-  const yesPrice = parseOutcomePrice(market.outcomePrices)
-  const volume = (market.volume24hr || 0).toLocaleString()
+  const yesPrice = parseOutcomePrice(market.outcomePrices);
+  const volume = (market.volume24hr || 0).toLocaleString();
   return `MARKET: ${market.question}
 CATEGORY: ${market.category || 'General'}
 YES: ${(yesPrice * 100).toFixed(1)}% | NO: ${(100 - yesPrice * 100).toFixed(1)}%
 VOL 24H: $${volume}
 END: ${market.end_date_iso ? new Date(market.end_date_iso).toLocaleDateString() : 'TBD'}
 
-Analyze and return JSON signal.`
+Analyze and return JSON signal.`;
 }
 
-// Helper default signal jika semua gagal
+// ────────────────────────────────────────────────────────────────────────
+// Helper: default signal bila semua gagal
+// ────────────────────────────────────────────────────────────────────────
 function getDefaultSignal(market: PolymarketMarket, yesPrice: number): CombinedSignal {
   return {
     market_id: market.id,
@@ -379,33 +399,31 @@ function getDefaultSignal(market: PolymarketMarket, yesPrice: number): CombinedS
     yesPrice,
     noPrice: 1 - yesPrice,
     recommendedSide: 'YES',
-    timestamp: Date.now()
-  }
+    timestamp: Date.now(),
+  };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 8. BATCH ANALYSIS
-// ─────────────────────────────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
+// 8. BATCH ANALYSIS (opsional)
+// ────────────────────────────────────────────────────────────────────────
 export async function analyzeMarketsBatch(markets: PolymarketMarket[]): Promise<CombinedSignal[]> {
-  const signals: CombinedSignal[] = []
-  const CONCURRENCY = 3 
-  let completed = 0
+  const signals: CombinedSignal[] = [];
+  const CONCURRENCY = 3;
+  let completed = 0;
 
   for (let i = 0; i < markets.length; i += CONCURRENCY) {
-    const batch = markets.slice(i, i + CONCURRENCY)
-    const batchResults = await Promise.all(batch.map(async (market) => {
-      const signal = await analyzeMarket(market)
-      completed++
-      if (completed % 5 === 0) console.log(`Batch Progress: ${Math.round(completed / markets.length * 100)}%`)
-      return signal
-    }))
-
-    signals.push(...batchResults)
-    
-    if (i + CONCURRENCY < markets.length) {
-      await new Promise(r => setTimeout(r, 1000))
-    }
+    const batch = markets.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map(async (m) => {
+        const sig = await analyzeMarket(m);
+        completed++;
+        if (completed % 5 === 0) console.log(`Batch progress: ${Math.round((completed / markets.length) * 100)}%`);
+        return sig;
+      })
+    );
+    signals.push(...batchResults);
+    if (i + CONCURRENCY < markets.length) await new Promise((r) => setTimeout(r, 1_000));
   }
 
-  return signals.sort((a, b) => b.confidence - a.confidence)
+  return signals.sort((a, b) => b.confidence - a.confidence);
 }
