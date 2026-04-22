@@ -1,78 +1,125 @@
+// app/api/portfolio/route.ts
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveCredentials } from '@/lib/clob-auth'
 import type { ClobCreds } from '@/lib/clob-auth'
 
-// Konfigurasi Blockchain Polygon
-const POLYGON_RPC_URL = 'https://polygon-rpc.com'
-const USDC_CONTRACT_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'
+/* ------------------------------------------------------------------
+   Konfigurasi RPC Polygon
+   - Anda dapat men‑override dengan env‑var POLYGON_RPC_URL
+   - Daftar fallback public RPC (tidak memerlukan API key)
+------------------------------------------------------------------- */
+const DEFAULT_RPC_ENDPOINTS = [
+  'https://polygon-rpc.com',                     // public, kadang rate‑limited
+  'https://rpc.ankr.com/polygon',               // ankr, public
+  'https://cloudflare-eth.com',                 // Cloudflare (Ethereum mainnet) – tetapi masih dapat dipakai untuk Polygon via eth_call (sama saja)
+]
+
+const RPC_ENDPOINT = process.env.POLYGON_RPC_URL?.trim() || ''
+const USDC_CONTRACT_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174' // USDC di Polygon (6 desimal)
 
 /**
- * Fungsi untuk memanggil kontrak pintar USDC di Polygon
- * Menggunakan metode eth_call untuk mengambil balanceOf(address)
+ * Membuat payload `eth_call` untuk fungsi ERC‑20 `balanceOf(address)`.
+ * selector untuk balanceOf = 0x70a08231
  */
-async function getOnChainUSDCBalance(address: string): Promise<number> {
-  // ABI minimal untuk fungsi balanceOf(address)
-  // selector untuk balanceOf(address) adalah 0x70a08231
-  const data = '0x70a08231' + address.toLowerCase().replace('0x', '').padStart(64, '0')
+function buildBalanceOfPayload(address: string): string {
+  const clean = address.toLowerCase().replace(/^0x/, '')
+  return '0x70a08231' + clean.padStart(64, '0')
+}
+
+/**
+ * Mencoba membaca saldo USDC dari satu RPC endpoint.
+ * Mengembalikan `null` bila request gagal (status != 200 atau error RPC).
+ */
+async function tryRpcBalance(rpcUrl: string, address: string): Promise<number | null> {
+  const payload = buildBalanceOfPayload(address)
 
   try {
-    const response = await fetch(POLYGON_RPC_URL, {
+    const resp = await fetch(rpcUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'eth_call',
-        params: [
-          {
-            to: USDC_CONTRACT_ADDRESS,
-            data: data,
-          },
-          'latest',
-        ],
+        params: [{ to: USDC_CONTRACT_ADDRESS, data: payload }, 'latest'],
         id: 1,
       }),
     })
 
-    if (!response.ok) throw new Error(`RPC Error: ${response.status}`)
+    // 401, 403, atau non‑200 menandakan RPC menolak request
+    if (!resp.ok) {
+      console.warn(`[RPC] ${rpcUrl} responded ${resp.status}`)
+      return null
+    }
 
-    const result = await response.json()
-    if (result.error) throw new Error(`RPC Error: ${result.error.message}`)
+    const json = await resp.json()
+    if (json.error) {
+      console.warn(`[RPC] ${rpcUrl} error: ${json.error.message}`)
+      return null
+    }
 
-    // Hasil balance dalam hex (misal: 0x0000...0001a2b3c4)
-    const hexBalance = result.result
+    const hexBalance = json.result as string
     const balanceWei = BigInt(hexBalance)
-    
-    // USDC di Polygon memiliki 6 desimal
+
+    // USDC memiliki 6 desimal pada Polygon
     return Number(balanceWei) / 1_000_000
-  } catch (error) {
-    console.error('[On-Chain Balance Error]:', error)
-    throw error
+  } catch (e) {
+    console.warn(`[RPC] ${rpcUrl} threw:`, (e as Error).message)
+    return null
   }
 }
 
+/**
+ * Loop melalui daftar RPC (custom → default) sampai salah satu berhasil.
+ * Jika semua gagal, melempar error.
+ */
+async function getOnChainUSDCBalance(address: string): Promise<number> {
+  // 1️⃣ Jika ada env‑var khusus, coba dulu
+  const candidates = RPC_ENDPOINT ? [RPC_ENDPOINT] : DEFAULT_RPC_ENDPOINTS
+
+  for (const rpc of candidates) {
+    const bal = await tryRpcBalance(rpc, address)
+    if (bal !== null) {
+      console.log(`[Portfolio API] Balance fetched via ${rpc}: $${bal}`)
+      return bal
+    }
+  }
+
+  // Jika sampai sini semua RPC gagal → lempar error
+  throw new Error('All Polygon RPC endpoints failed (401/Rate‑limit/Network).')
+}
+
+/* ------------------------------------------------------------------
+   Handler GET /api/portfolio
+------------------------------------------------------------------- */
 export async function GET(request: NextRequest) {
   try {
+    // -----------------------------------------------------------------
+    // 1️⃣ Baca kredensial (hanya untuk mengambil address proxy)
+    // -----------------------------------------------------------------
     const credsHeader = request.headers.get('X-Clob-Creds')
     let clientCreds: Partial<ClobCreds> | undefined
     if (credsHeader) {
       try { clientCreds = JSON.parse(credsHeader) } catch { /* ignore */ }
     }
-
     const creds = resolveCredentials(clientCreds)
-    if (!creds || !creds.funderAddress) {
-      return NextResponse.json({ 
-        configured: false, 
-        error: 'No credentials or funder address provided' 
-      }, { status: 400 })
+
+    if (!creds?.funderAddress) {
+      return NextResponse.json(
+        { configured: false, error: 'No proxy wallet address supplied' },
+        { status: 400 }
+      )
     }
 
-    console.log(`[Portfolio API] Fetching on-chain balance for proxy wallet: ${creds.funderAddress}`)
+    console.log(`[Portfolio API] Fetching on‑chain balance for proxy wallet: ${creds.funderAddress}`)
 
-    // AMBIL BALANCE LANGSUNG DARI BLOCKCHAIN
+    // -----------------------------------------------------------------
+    // 2️⃣ Ambil saldo USDC langsung dari blockchain
+    // -----------------------------------------------------------------
     const balance = await getOnChainUSDCBalance(creds.funderAddress)
-    
-    console.log(`[Portfolio API] Successfully fetched balance: $${balance}`)
 
+    // -----------------------------------------------------------------
+    // 3️⃣ Bangun objek statistik (untuk UI Portfolio)
+    // -----------------------------------------------------------------
     const stats = {
       total_balance: balance,
       available_balance: balance,
@@ -87,17 +134,16 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       configured: true,
-      balance: balance,
-      stats: stats,
+      balance,
+      stats,
       timestamp: new Date().toISOString(),
-      method: 'on-chain'
+      method: 'on-chain',
     })
-
   } catch (error: any) {
     console.error('[Portfolio API] Global Error:', error)
-    return NextResponse.json({ 
-      error: 'Failed to fetch balance', 
-      details: error.message 
-    }, { status: 500 })
+    return NextResponse.json(
+      { error: 'Failed to fetch on‑chain balance', details: error.message },
+      { status: 500 }
+    )
   }
 }
