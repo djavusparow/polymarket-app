@@ -29,7 +29,6 @@ export async function buildClobSignature(
   body = ''
 ): Promise<string> {
   const bodyStr = body ? body.replace(/'/g, '"') : ''
-  // Polymarket HMAC message format: timestamp + method + path + body
   const message = `${timestamp}${method}${path}${bodyStr}`
   
   const secretBytes = decodeBase64(secret)
@@ -51,26 +50,17 @@ export async function buildClobHeaders(
 ): Promise<Record<string, string>> {
   const timestamp = Math.floor(Date.now() / 1000).toString()
   
-  // Normalize path (pastikan path selalu dimulai dengan /)
+  // Normalisasi path (pastikan dimulai dengan /)
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
 
   const signature = await buildClobSignature(creds.apiSecret, timestamp, method, normalizedPath, body)
 
-  // POLY_ADDRESS:
-  // Jika Signature Type = 0 (EOA), gunakan Private Key untuk generate signer address.
-  // Jika Signature Type = 1 (Proxy), gunakan Funder Address (Proxy Address).
-  let polyAddress = creds.funderAddress // Default gunakan funder address (proxy)
-  
-  if (creds.signatureType === 0 && creds.privateKey) {
-     // Jika EOA, derived address dari private key
-     // (Implementasi deriveSignerAddress bisa menggunakan library noble/secp256k1)
-     // Untuk sementara, jika private key ada, kita asumsikan itu adalah address signer
-     // Tapi untuk Proxy wallet (type 0), funderAddress adalah proxy address.
-     // Coba gunakan funderAddress dulu, karena biasanya Proxy Wallet menggunakan funderAddress sebagai signer.
-  }
+  // POLY_ADDRESS harus diisi dengan Proxy Wallet Address (funderAddress)
+  // Karena kita menggunakan API Key pribadi, Polymarket akan mengenali akun ini.
+  const polyAddress = creds.funderAddress
 
   return {
-    'POLY_ADDRESS':    polyAddress, 
+    'POLY_ADDRESS':    polyAddress,
     'POLY_SIGNATURE':  signature,
     'POLY_TIMESTAMP':  timestamp,
     'POLY_API_KEY':    creds.apiKey,
@@ -87,7 +77,7 @@ export function resolveCredentials(fromClient?: Partial<ClobCreds>): ClobCreds |
   const privateKey = process.env.POLYMARKET_PRIVATE_KEY
   const sigType = process.env.POLYMARKET_SIGNATURE_TYPE
 
-  // Jika ada env vars, gunakan itu
+  // Gunakan env vars jika ada
   if (apiKey && apiSecret && apiPassphrase && funderAddress) {
     return {
       apiKey,
