@@ -4,8 +4,6 @@ import { parseOutcomePrice } from './polymarket'
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. ENVIRONMENT VARIABLES
 // ─────────────────────────────────────────────────────────────────────────────
-// Pastikan variabel ini ada di Vercel Environment Variables:
-// NEWSAPI_KEY, BLACKBOX_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, DEEPSEEK_API_KEY
 const NEWS_API_KEY = process.env.NEWSAPI_KEY || ''
 const BLACKBOX_API_KEY = process.env.BLACKBOX_API_KEY || ''
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
@@ -15,7 +13,6 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || ''
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. PROVIDERS CONFIGURATION
 // ─────────────────────────────────────────────────────────────────────────────
-// Urutan provider menentukan prioritas: DeepSeek (1st), Blackbox (2nd), dll.
 const LLM_PROVIDERS = [
   {
     name: 'deepseek',
@@ -27,8 +24,10 @@ const LLM_PROVIDERS = [
   },
   {
     name: 'blackbox',
+    // Menggunakan endpoint chat resmi Blackbox
     endpoint: 'https://llm.blackbox.ai/chat/completions',
-    model: 'claude-3.5-sonnet', // Model default Blackbox yang stabil
+    // Model default Blackbox yang stabil
+    model: 'claude-3.5-sonnet', 
     keyHeader: 'Authorization',
     keyPrefix: 'Bearer ',
     key: BLACKBOX_API_KEY
@@ -44,7 +43,7 @@ const LLM_PROVIDERS = [
   {
     name: 'groq',
     endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-    model: 'llama-3.1-8b-instant', // Model Groq yang masih aktif (ganti jika error)
+    model: 'llama-3.1-8b-instant', 
     keyHeader: 'Authorization',
     keyPrefix: 'Bearer ',
     key: GROQ_API_KEY
@@ -52,19 +51,11 @@ const LLM_PROVIDERS = [
 ] as const
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ─── PROMPTS (satu objek, dipakai oleh callLLM) ───────────────────────────────
+// 3. PROMPTS
+// ─────────────────────────────────────────────────────────────────────────────
 const PROMPTS = {
   MARKET: `You are an expert prediction market analyst specializing in Polymarket.
 Your role is to analyze binary outcome markets and provide trading signals.
-
-For each market you analyze, consider:
-1. Base rates and historical frequencies for similar events
-2. Current market price vs your estimated true probability
-3. Volume and liquidity signals
-4. Time remaining until resolution
-5. Recent news and information signals
-6. Market inefficiencies and mispricing
-
 Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
 {
   "signal": "BUY" | "SELL" | "HOLD",
@@ -78,16 +69,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
 }`,
 
   RISK: `You are a quantitative risk analyst for prediction market trading.
-Your role is to evaluate market risks and provide risk‑adjusted trading signals.
-
-For each market evaluate:
-1. Uncertainty and variance in outcome probability
-2. Tail risks and black swan events
-3. Correlation with other market events
-4. Bid‑ask spread and slippage costs
-5. Position sizing based on Kelly criterion
-6. Maximum drawdown risk
-
+Your role is to evaluate market risks and provide risk-adjusted trading signals.
 Respond ONLY with valid JSON in this exact format:
 {
   "signal": "BUY" | "SELL" | "HOLD",
@@ -102,15 +84,6 @@ Respond ONLY with valid JSON in this exact format:
 
   SENTIMENT: `You are a sentiment and information analyst for prediction market trading.
 Your role is to assess information flow, sentiment, and market momentum.
-
-For each market analyze:
-1. Information efficiency of current market price
-2. Recency bias in market pricing
-3. Crowd wisdom vs expert judgment signals
-4. Recent developments and news catalysts
-5. Social sentiment and narrative strength
-6. Momentum and price trend signals
-
 Respond ONLY with valid JSON in this exact format:
 {
   "signal": "BUY" | "SELL" | "HOLD",
@@ -121,22 +94,37 @@ Respond ONLY with valid JSON in this exact format:
   "target_price": <number 0-1>,
   "stop_loss_pct": <number 0-50>,
   "take_profit_pct": <number 0-200>
+}`,
+
+  // Prompt khusus untuk analisis berita NewsAPI (seperti yang Anda minta)
+  NEWS_ANALYST: `You are a news analyst for prediction markets.
+Your role is to analyze recent news headlines and assess their impact on the market outcome.
+Respond ONLY with valid JSON in this exact format:
+{
+  "signal": "BUY" | "SELL" | "HOLD",
+  "confidence": <number 0-100>,
+  "rationale": "<2-3 sentence explanation based on news>",
+  "true_probability_yes": <number 0-1>,
+  "edge": <number -100 to 100>,
+  "target_price": <number 0-1>,
+  "stop_loss_pct": <number 0-50>,
+  "take_profit_pct": <number 0-200>
 }`
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. NEWS FETCHING
+// 4. NEWS FETCHING (NEWSAPI INTEGRATION)
 // ─────────────────────────────────────────────────────────────────────────────
 async function fetchNews(query: string): Promise<string> {
   if (!NEWS_API_KEY) return ''
   
   try {
-    // Timeout 10 detik agar tidak menunggu terlalu lama
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), 10000)
 
+    // Mengambil berita terbaru untuk query pasar
     const res = await fetch(
-      `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&language=en&apiKey=${NEWS_API_KEY}`,
+      `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&language=en&pageSize=5&apiKey=${NEWS_API_KEY}`,
       { signal: controller.signal }
     )
     clearTimeout(timeoutId)
@@ -144,29 +132,34 @@ async function fetchNews(query: string): Promise<string> {
     if (!res.ok) return ''
     
     const data = await res.json()
-    const recent = data.articles?.slice(0, 3)
-      .map((a: any) => `- ${a.title} (${new Date(a.publishedAt).toLocaleDateString()})`)
-      .join('\n') || ''
+    if (!data.articles || data.articles.length === 0) return ''
+
+    // Format berita menjadi string ringkas
+    const recent = data.articles
+      .slice(0, 3)
+      .map((a: any) => `- ${a.title} (Source: ${a.source?.name || 'Unknown'})`)
+      .join('\n')
     
-    return recent ? `\n\nRECENT NEWS:\n${recent}` : ''
-  } catch {
+    return `\n\nLATEST NEWS:\n${recent}`
+  } catch (e) {
+    console.warn('[NewsAPI] Fetch error:', e)
     return ''
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. CALL LLM FUNCTION
+// 5. CALL LLM FUNCTION (DENGAN PERBAIKAN DEEPSEEK & BLACKBOX)
 // ─────────────────────────────────────────────────────────────────────────────
 async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, context: string): Promise<AIAnalysis | null> {
   if (!provider.key || provider.key.trim() === '') {
-    console.error(`[callLLM] ${provider.name}: ❌ NO API KEY`)
+    // Jangan log error karena mungkin ini memang provider yang tidak di-set
     return null
   }
 
   console.log(`[callLLM] ${provider.name} → ${provider.model}`)
   
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 30000) // 30 detik timeout
+  const timeoutId = setTimeout(() => controller.abort(), 45000) // Timeout 45 detik
 
   try {
     const headers: Record<string, string> = {
@@ -174,9 +167,10 @@ async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, c
       [provider.keyHeader]: `${provider.keyPrefix}${provider.key}`
     }
 
-    // Spesifik untuk Blackbox
+    // Spesifik untuk Blackbox (customerId opsional, tapi jika ada error 402, coba tanpa ini)
     if (provider.name === 'blackbox') {
-      headers['customerId'] = 'cus_UIDAXBwD6XwhtQ'
+      // Hapus baris ini jika Anda yakin key Anda adalah key produksi langsung
+      // headers['customerId'] = 'cus_UIDAXBwD6XwhtQ' 
     }
 
     const res = await fetch(provider.endpoint, {
@@ -199,6 +193,7 @@ async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, c
     // Cek response status
     if (!res.ok) {
       const errText = await res.text()
+      // Log ringkas saja, jangan panic
       console.error(`[${provider.name}] ❌ HTTP ${res.status}: ${errText.slice(0, 100)}...`)
       return null
     }
@@ -206,14 +201,38 @@ async function callLLM(provider: typeof LLM_PROVIDERS[number], prompt: string, c
     const data = await res.json()
     const content = data?.choices?.[0]?.message?.content ?? ''
     
-    // Bersihkan markdown (```json ... ```)
-    const clean = content.replace(/```json?[\s\S]*?```/g, '').replace(/```/g, '').trim()
+    // PERBAIKAN UTAMA UNTUK DEEPSEEK:
+    // Deepseek sering mengirim teks pembuka sebelum JSON. 
+    // Kita gunakan regex yang lebih kuat untuk ekstrak JSON.
+    let clean = content.trim()
     
+    // Coba cari blok JSON yang diapit ```
+    const jsonBlockMatch = clean.match(/```json\s*([\s\S]*?)\s*```/);
+    if (jsonBlockMatch) {
+      clean = jsonBlockMatch[1];
+    } else {
+      // Coba cari blok JSON tanpa label
+      const blockMatch = clean.match(/```([\s\S]*?)```/);
+      if (blockMatch) {
+        clean = blockMatch[1];
+      } else {
+        // Jika tidak ada ```, coba cari objek JSON mulai dari { pertama hingga } terakhir
+        const start = clean.indexOf('{');
+        const end = clean.lastIndexOf('}');
+        if (start !== -1 && end !== -1 && end > start) {
+          clean = clean.substring(start, end + 1);
+        }
+      }
+    }
+    
+    // Bersihkan sisa karakter aneh
+    clean = clean.replace(/\n/g, '').replace(/\r/g, '').trim()
+
     let parsed: any
     try {
       parsed = JSON.parse(clean)
     } catch (parseErr) {
-      console.error(`[${provider.name}] ❌ JSON Parse Error:`, clean.slice(0, 100))
+      console.error(`[${provider.name}] ❌ JSON Parse Error. Raw content (first 200 chars):`, content.substring(0, 200))
       return null
     }
 
@@ -280,30 +299,37 @@ export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedS
     const yesPrice = parseOutcomePrice(market.outcomePrices)
     const baseContext = buildMarketContext(market)
     
-    // 1. Fetch News
+    // 1. Fetch News (Menggunakan NewsAPI Key yang sudah Anda set di Vercel)
     const news = await fetchNews(market.question)
-    const fullContext = news ? baseContext + news : baseContext
+    const fullContext = baseContext + news
 
     // 2. Siapkan Provider (Hanya yang punya key)
     const activeProviders = LLM_PROVIDERS.filter(p => p.key && p.key.trim() !== '')
     
     if (activeProviders.length === 0) {
-      console.error('[analyzeMarket] ❌ CRITICAL: No API keys configured in Vercel Env!')
+      console.error('[analyzeMarket] ❌ CRITICAL: No API keys configured!')
       return getDefaultSignal(market, yesPrice)
     }
 
     console.log(`[analyzeMarket] Active providers: ${activeProviders.map(p => p.name).join(', ')}`)
 
-    // 3. Jalankan 4 Analisis Paralel (Market, Risk, Sentiment, dan tambahan)
-    // Kita rotasi provider jika ada lebih dari 1, atau ulangi jika kurang dari 4
+    // 3. Menjalankan 4 Analisis Paralel + 1 News Analysis (Total 5)
+    // Kita rotasi provider untuk 4 LLM utama, dan tambahkan NewsAnalyst
+    
     const getProvider = (index: number) => activeProviders[index % activeProviders.length]
     
     const results = await Promise.all([
-      callLLM(getProvider(0), PROMPTS.MARKET,    fullContext),
-      callLLM(getProvider(1), PROMPTS.RISK,     fullContext),
-      callLLM(getProvider(2), PROMPTS.SENTIMENT,fullContext),
-      // Tambahan untuk ke-4: menggunakan provider ke-3 (atau perulangan jika activeProviders < 4)
-      callLLM(getProvider(3), PROMPTS.MARKET,   fullContext) 
+      // 1. Market Analyst (LLM)
+      callLLM(getProvider(0), PROMPTS.MARKET, fullContext),
+      // 2. Risk Analyst (LLM)
+      callLLM(getProvider(1), PROMPTS.RISK, fullContext),
+      // 3. Sentiment Analyst (LLM)
+      callLLM(getProvider(2), PROMPTS.SENTIMENT, fullContext),
+      // 4. LLM Tambahan (agar ada 4 LLM yang berjalan)
+      callLLM(getProvider(3), PROMPTS.MARKET, fullContext),
+      // 5. NEWS ANALYST (Menggunakan NewsAPI + Prompt Khusus)
+      // Kita pakai provider pertama yang ada untuk memproses konteks berita ini
+      callLLM(getProvider(0), PROMPTS.NEWS_ANALYST, news || fullContext) 
     ])
 
     // 4. Gabungkan hasil
@@ -358,11 +384,11 @@ function getDefaultSignal(market: PolymarketMarket, yesPrice: number): CombinedS
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 8. BATCH ANALYSIS (Opsional)
+// 8. BATCH ANALYSIS
 // ─────────────────────────────────────────────────────────────────────────────
 export async function analyzeMarketsBatch(markets: PolymarketMarket[]): Promise<CombinedSignal[]> {
   const signals: CombinedSignal[] = []
-  const CONCURRENCY = 3 // Jalankan 3 market sekaligus
+  const CONCURRENCY = 3 
   let completed = 0
 
   for (let i = 0; i < markets.length; i += CONCURRENCY) {
@@ -370,13 +396,12 @@ export async function analyzeMarketsBatch(markets: PolymarketMarket[]): Promise<
     const batchResults = await Promise.all(batch.map(async (market) => {
       const signal = await analyzeMarket(market)
       completed++
-      if (completed % 10 === 0) console.log(`Batch Progress: ${Math.round(completed / markets.length * 100)}%`)
+      if (completed % 5 === 0) console.log(`Batch Progress: ${Math.round(completed / markets.length * 100)}%`)
       return signal
     }))
 
     signals.push(...batchResults)
     
-    // Delay kecil untuk menghindari rate limit jika batch besar
     if (i + CONCURRENCY < markets.length) {
       await new Promise(r => setTimeout(r, 1000))
     }
