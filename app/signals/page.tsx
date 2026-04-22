@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { BrainCircuit, TrendingUp, TrendingDown, Activity, Filter, Loader2, RefreshCw, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AppSidebar } from '@/components/app-sidebar'
@@ -10,20 +10,20 @@ import type { CombinedSignal, PolymarketMarket, TradingSettings } from '@/lib/ty
 
 type FilterType = 'all' | 'high' | 'buy' | 'sell'
 
-// Type definition for API response
 interface AnalyzeResponse {
   signal?: CombinedSignal
   error?: string
 }
 
 export default function SignalsPage() {
+  // --- State ---
   const [markets, setMarkets] = useState<PolymarketMarket[]>([])
   const [signals, setSignals] = useState<CombinedSignal[]>([])
   const [scanning, setScanning] = useState(false)
   const [progress, setProgress] = useState(0)
   const [filter, setFilter] = useState<FilterType>('all')
   const [selected, setSelected] = useState<CombinedSignal | null>(null)
-  const [executingId, setExecutingId] = useState<string | null>(null)
+  const [executingIds, setExecutingIds] = useState<Set<string>>(new Set()) // Track multiple executing IDs
   const [retryCount, setRetryCount] = useState(0)
   const [lastError, setLastError] = useState<string | null>(null)
   
@@ -32,14 +32,29 @@ export default function SignalsPage() {
 
   const settings = getSettings()
   const portfolio = calculatePortfolioStats()
+  
+  // Ref untuk mencegah double execution di loop auto-trade
+  const executedThisSession = useRef<Set<string>>(new Set())
 
-  // Rate limiting delay: 500ms for better performance while respecting API limits
+  // --- Helper Functions ---
+
+  // Rate limiting delay: 500ms
   const RATE_LIMIT_DELAY = 500
 
-  // Signature type validation helper
   const validateSignatureType = (type: number): boolean => {
-    return [0, 1, 2].includes(type) // EOA, POLY_PROXY, GNOSIS_SAFE
+    return [0, 1, 2].includes(type)
   }
+
+  // Calculate trade size based on confidence (same as trade-engine)
+  const calcTradeSize = (sig: CombinedSignal): number => {
+    const mult = Math.min(sig.confidence / 100, 1)
+    return Math.round(
+      settings.min_trade_size +
+        (settings.max_trade_size - settings.min_trade_size) * mult
+    )
+  }
+
+  // --- Core Logic ---
 
   // Analyze with Retry (Handles 425 Engine Restart)
   const analyzeWithRetry = useCallback(async (market: PolymarketMarket): Promise<AnalyzeResponse | null> => {
@@ -57,7 +72,7 @@ export default function SignalsPage() {
         if (response.status === 425) {
           console.log(`Engine restarting, retrying in ${delay/1000}s... (Attempt ${attempt + 1})`)
           await new Promise(r => setTimeout(r, delay))
-          delay = Math.min(delay * 2, 30000) // Exponential backoff up to 30s
+          delay = Math.min(delay * 2, 30000)
           continue
         }
         
@@ -69,7 +84,6 @@ export default function SignalsPage() {
         return await response.json()
       } catch (error) {
         console.warn(`Network error during analysis:`, error)
-        // Wait before retrying on network error
         await new Promise(r => setTimeout(r, delay))
       }
     }
@@ -84,6 +98,7 @@ export default function SignalsPage() {
     setSignals([])
     setAnalyzingMarkets(new Set())
     setLastError(null)
+    executedThisSession.current.clear() // Reset executed tracker on new scan
 
     try {
       const res = await fetch('/api/markets?type=top&limit=15')
@@ -93,7 +108,6 @@ export default function SignalsPage() {
       const validMarkets = mData ?? []
       setMarkets(validMarkets)
 
-      // Analyze each market with better error handling and rate limiting
       for (let i = 0; i < validMarkets.length; i++) {
         const market = validMarkets[i]
         setProgress(Math.round(((i + 1) / validMarkets.length) * 100))
@@ -105,18 +119,15 @@ export default function SignalsPage() {
           setSignals(prev => [...prev, result.signal!].sort((a, b) => b.confidence - a.confidence))
         }
 
-        // Remove from analyzing set
         setAnalyzingMarkets(prev => {
           const next = new Set(prev)
           next.delete(market.id)
           return next
         })
 
-        // Rate limiting delay
         await new Promise(r => setTimeout(r, RATE_LIMIT_DELAY))
       }
       
-      // Reset retry count on success
       setRetryCount(0)
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error'
@@ -125,9 +136,8 @@ export default function SignalsPage() {
     } finally {
       setScanning(false)
     }
-  }, [analyzeWithRetry, RATE_LIMIT_DELAY])
+  }, [analyzeWithRetry])
 
-  // Exponential backoff retry logic for UI
   const handleRetry = useCallback(() => {
     const delay = Math.min(1000 * Math.pow(2, retryCount), 30000)
     console.log(`Retrying in ${delay}ms... (Attempt ${retryCount + 1})`)
@@ -137,36 +147,33 @@ export default function SignalsPage() {
     }, delay)
   }, [retryCount, fetchAndScan])
 
-  // Initial fetch and cleanup on unmount
-  useEffect(() => {
-    fetchAndScan()
+  // --- Auto Trade Execution ---
 
-    return () => {
-      // Cleanup to prevent memory leaks
-      setAnalyzingMarkets(new Set())
-      setSignals([])
-    }
-  }, [fetchAndScan])
+  const executeSignal = useCallback(async (signal: CombinedSignal) => {
+    // Prevent double execution
+    if (executedThisSession.current.has(signal.market_id)) return
+    executedThisSession.current.add(signal.market_id)
 
-  const executeSignal = async (signal: CombinedSignal) => {
+    setExecutingIds(prev => new Set(prev).add(signal.market_id))
+
+    // Get credentials
     const storedCreds = getCredentials()
     
-    // Null safety: Validate complete credentials before execution
     if (!storedCreds?.api_key || !storedCreds?.api_secret || !storedCreds?.funder_address) {
       alert('Please configure complete API credentials in Settings first')
+      setExecutingIds(prev => { const next = new Set(prev); next.delete(signal.market_id); return next })
       return
     }
 
-    // Validate signature type
     if (!validateSignatureType(storedCreds.signature_type ?? 1)) {
        alert('Invalid signature type configured. Please check Settings.')
+       setExecutingIds(prev => { const next = new Set(prev); next.delete(signal.market_id); return next })
        return
     }
 
-    setExecutingId(signal.market_id)
     const clobCreds = {
-      apiKey:        storedCreds.api_key,
-      apiSecret:     storedCreds.api_secret,
+      apiKey: storedCreds.api_key,
+      apiSecret: storedCreds.api_secret,
       apiPassphrase: storedCreds.api_passphrase,
       funderAddress: storedCreds.funder_address,
       signatureType: storedCreds.signature_type ?? 1,
@@ -180,7 +187,7 @@ export default function SignalsPage() {
           market_id: signal.market_id,
           question: signal.question,
           side: signal.recommendedSide,
-          size: settings.min_trade_size,
+          size: calcTradeSize(signal),
           price: signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice,
           signal_confidence: signal.confidence,
           ai_rationale: signal.analyses.map(a => a.rationale).join(' | '),
@@ -189,7 +196,9 @@ export default function SignalsPage() {
           credentials: clobCreds,
         }),
       })
+      
       const result = await res.json()
+      
       if (result.success) {
         // Store trade locally
         addTrade({
@@ -199,7 +208,7 @@ export default function SignalsPage() {
           question: signal.question,
           side: signal.recommendedSide,
           token_id: result.token_id ?? '',
-          size: settings.min_trade_size,
+          size: calcTradeSize(signal), // Use calculated size here too for consistency
           entry_price: signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice,
           current_price: signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice,
           stop_loss: (signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice) * (1 - settings.default_stop_loss / 100),
@@ -210,18 +219,48 @@ export default function SignalsPage() {
           order_id: result.order_id,
           opened_at: Date.now(),
         })
+        
+        // Update UI state
         setSignals(prev => prev.map(s => s.market_id === signal.market_id ? { ...s, executed: true } : s))
       } else {
-        alert(`Error: ${result.error}`)
+        console.error('Trade execution failed:', result.error)
+        // If failed, remove from executedThisSession so it can be retried
+        executedThisSession.current.delete(signal.market_id)
       }
     } catch (e) {
-      alert('Execution failed')
+      console.error('Execution error:', e)
+      executedThisSession.current.delete(signal.market_id)
     } finally {
-      setExecutingId(null)
+      setExecutingIds(prev => { const next = new Set(prev); next.delete(signal.market_id); return next })
     }
-  }
+  }, [settings])
 
-  // Memoize filtered signals for performance
+  // --- Auto-Trade Watcher (Loop) ---
+  useEffect(() => {
+    if (!settings.auto_trade_enabled) return
+
+    // Loop through current signals
+    signals.forEach(sig => {
+      const highConfidence = sig.confidence >= settings.min_confidence
+      const canTrade = sig.direction !== 'HOLD' && highConfidence && !sig.executed
+
+      if (canTrade) {
+        console.log(`Auto-triggering trade for ${sig.market_id}`)
+        executeSignal(sig)
+      }
+    })
+  }, [signals, settings.auto_trade_enabled, settings.min_confidence, executeSignal])
+
+  // --- Initial Fetch ---
+  useEffect(() => {
+    fetchAndScan()
+    return () => {
+      setAnalyzingMarkets(new Set())
+      setSignals([])
+    }
+  }, [fetchAndScan])
+
+  // --- Memoized Filtered Signals ---
   const filtered = useMemo(() => {
     return signals.filter(s => {
       if (filter === 'high') return s.confidence >= 75
@@ -322,7 +361,7 @@ export default function SignalsPage() {
                   isAnalyzing={analyzingMarkets.has(signal.market_id)}
                   onSelect={() => setSelected(selected?.market_id === signal.market_id ? null : signal)}
                   onExecute={() => executeSignal(signal)}
-                  executing={executingId === signal.market_id}
+                  executing={executingIds.has(signal.market_id)}
                   settings={settings}
                 />
               ))}
@@ -340,7 +379,7 @@ export default function SignalsPage() {
             {/* Detail panel */}
             <div>
               {selected ? (
-                <SignalDetail signal={selected} settings={settings} onExecute={() => executeSignal(selected)} executing={executingId === selected.market_id} />
+                <SignalDetail signal={selected} settings={settings} onExecute={() => executeSignal(selected)} executing={executingIds.has(selected.market_id)} />
               ) : (
                 <div className="bg-card border border-border rounded-lg p-6 text-center">
                   <BrainCircuit className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
@@ -356,7 +395,6 @@ export default function SignalsPage() {
 }
 
 // ─── Signal Card ──────────────────────────────────────────────────────────────
-
 function SignalCard({
   signal,
   selected,
@@ -451,7 +489,6 @@ function SignalCard({
 }
 
 // ─── Signal Detail ────────────────────────────────────────────────────────────
-
 function SignalDetail({ signal, settings, onExecute, executing }: {
   signal: CombinedSignal
   settings: TradingSettings
