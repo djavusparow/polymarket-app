@@ -34,56 +34,54 @@ export interface ClobCreds {
  * Polymarket API secrets use base64url encoding (uses - and _ instead of + and /).
  */
 function decodeBase64(str: string): Uint8Array {
-  // Convert base64url to standard base64
-  const base64 = str
-    .replace(/-/g, '+')
-    .replace(/_/g, '/')
-    .padEnd(str.length + (4 - (str.length % 4)) % 4, '=')
   try {
+    // Convert base64url to standard base64
+    const base64 = str
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+      .padEnd(str.length + (4 - (str.length % 4)) % 4, '=')
+    
     const binary = atob(base64)
     return Uint8Array.from(binary, c => c.charCodeAt(0))
-  } catch {
-    // Not valid base64 at all — use raw UTF-8
+  } catch (e) {
+    // If decoding fails, try to encode the string directly as UTF-8
+    // (Fallback for non-base64 secrets, though Polymarket expects base64)
     return new TextEncoder().encode(str)
   }
 }
 
 /**
  * Derive the Ethereum EOA checksum address from a hex private key.
- * Uses @noble/curves (secp256k1) + keccak256 via Web Crypto.
- * Returns lowercase 0x-prefixed address (20 bytes).
+ * Uses @noble/curves (secp256k1) + keccak256.
  */
 export async function deriveSignerAddress(privateKeyHex: string): Promise<string> {
-  // Perbaikan: Validasi format private key dan hex characters
-  if (!privateKeyHex) {
-    throw new Error('Private key is required')
-  }
+  if (!privateKeyHex) throw new Error('Private key is required')
 
   const cleanHex = privateKeyHex.startsWith('0x') ? privateKeyHex.slice(2) : privateKeyHex
-  
-  if (cleanHex.length < 64) {
-    throw new Error('Invalid private key format: too short')
-  }
-  
-  // Validasi hex characters (0-9, a-f, A-F)
-  if (!/^[0-9a-fA-F]{64}$/.test(cleanHex)) {
-    throw new Error('Private key must be 64 hex characters')
+  if (cleanHex.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(cleanHex)) {
+    throw new Error('Invalid private key format. Must be 64 hex chars.')
   }
 
   try {
+    // Dynamic import to ensure module is available in server context
     const { secp256k1 } = await import('@noble/curves/secp256k1')
-    const pubKey = secp256k1.getPublicKey(cleanHex, false) // uncompressed, 65 bytes
-    // keccak256 of the 64-byte pubkey body (skip first byte 0x04)
-    const pubKeyBytes = pubKey.slice(1)
     const { keccak_256 } = await import('@noble/hashes/sha3')
+
+    // Get public key (uncompressed 65 bytes)
+    const pubKey = secp256k1.getPublicKey(cleanHex, false)
+    // Skip the first byte (0x04) to get 64 bytes
+    const pubKeyBytes = pubKey.slice(1)
+    
+    // Hash with Keccak256
     const hash = keccak_256(pubKeyBytes)
-    // Take last 20 bytes → Ethereum address
+    
+    // Take last 20 bytes for Ethereum address
     const addrBytes = hash.slice(-20)
     const addrHex = Array.from(addrBytes).map(b => b.toString(16).padStart(2, '0')).join('')
     return '0x' + addrHex
-  } catch {
-    // Fallback: if noble not available, return empty string to indicate derivation failed
-    return ''
+  } catch (error) {
+    console.error('Error deriving signer address:', error)
+    throw new Error('Failed to derive signer address from private key')
   }
 }
 
@@ -100,24 +98,29 @@ export async function buildClobSignature(
   const bodyStr = body ? body.replace(/'/g, '"') : ''
   const message = `${timestamp}${method}${path}${bodyStr}`
 
-  // Secret is base64url-encoded → decode to raw bytes (urlsafe_b64decode)
+  // Secret is base64url-encoded → decode to raw bytes
   const secretBytes = decodeBase64(secret)
 
-  const key = await crypto.subtle.importKey(
-    'raw',
-    secretBytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  )
+  try {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      secretBytes,
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    )
 
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message))
+    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message))
 
-  // Output must be base64url-encoded (urlsafe_b64encode) — same as py client
-  const sigBytes = new Uint8Array(sig)
-  const base64 = btoa(String.fromCharCode(...sigBytes))
-  // Convert standard base64 to base64url
-  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    // Output must be base64url-encoded (urlsafe_b64encode)
+    const sigBytes = new Uint8Array(sig)
+    const base64 = btoa(String.fromCharCode(...sigBytes))
+    // Convert standard base64 to base64url
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  } catch (error) {
+    console.error('Error building HMAC signature:', error)
+    throw new Error('Failed to generate HMAC signature')
+  }
 }
 
 /**
@@ -134,13 +137,24 @@ export async function buildClobHeaders(
   // Polymarket CLOB signing rule:
   // The full path INCLUDING query string is used in the HMAC message.
   // e.g. sign "/balance-allowance?asset_type=0" as-is
-  const signature = await buildClobSignature(creds.apiSecret, timestamp, method, path, body)
+  
+  // Ensure path starts with /
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
 
-  // L2 headers — exact match to py-clob-client create_level_2_headers():
-  // POLY_ADDRESS = signer.address() = EOA address derived from private key
-  // NOT the funder/proxy address — those are different for POLY_PROXY accounts
-  const signerAddress = creds.signerAddress ||
-    (creds.privateKey ? await deriveSignerAddress(creds.privateKey) : creds.funderAddress)
+  const signature = await buildClobSignature(creds.apiSecret, timestamp, method, normalizedPath, body)
+
+  // Determine signer address
+  // For EOA (type 0), POLY_ADDRESS is the EOA derived from private key OR funderAddress
+  // For Proxy (type 1), POLY_ADDRESS is usually the EOA derived from private key
+  let signerAddress = creds.signerAddress
+  
+  if (!signerAddress && creds.privateKey) {
+    signerAddress = await deriveSignerAddress(creds.privateKey)
+  }
+  
+  if (!signerAddress) {
+    signerAddress = creds.funderAddress
+  }
 
   return {
     'POLY_ADDRESS':    signerAddress,
@@ -156,63 +170,49 @@ export async function buildClobHeaders(
  * Resolve credentials with priority:
  *   1. Server env vars  (set in Vercel dashboard → preferred for production)
  *   2. Client-passed creds (from Settings UI stored in localStorage)
- *
- * signatureType env var: POLYMARKET_SIGNATURE_TYPE (0 or 1, default 0)
  */
 export function resolveCredentials(fromClient?: Partial<ClobCreds>): ClobCreds | null {
-  // Support both naming conventions — user sets whichever they configured in Vercel
-  const apiKey = (
-    process.env.CLOB_API_KEY ??
-    process.env.POLYMARKET_API_KEY
-  )
-  const apiSecret = (
-    process.env.CLOB_API_SECRET ??
-    process.env.POLYMARKET_API_SECRET
-  )
-  const apiPassphrase = (
-    process.env.CLOB_API_PASSPHRASE ??
-    process.env.POLYMARKET_API_PASSPHRASE
-  )
-  const funderAddress = (
-    process.env.FUNDER_ADDRESS ??
-    process.env.POLYMARKET_FUNDER_ADDRESS
-  )
-  const privateKey = (
-    process.env.WALLET_PRIVATE_KEY ??
-    process.env.POLYMARKET_PRIVATE_KEY
-  )
-  const sigTypeEnv = process.env.POLYMARKET_SIGNATURE_TYPE
+  // Prioritas 1: Environment Variables (Vercel)
+  const envApiKey = process.env.CLOB_API_KEY ?? process.env.POLYMARKET_API_KEY
+  const envApiSecret = process.env.CLOB_API_SECRET ?? process.env.POLYMARKET_API_SECRET
+  const envApiPassphrase = process.env.CLOB_API_PASSPHRASE ?? process.env.POLYMARKET_API_PASSPHRASE
+  const envFunderAddress = process.env.FUNDER_ADDRESS ?? process.env.POLYMARKET_FUNDER_ADDRESS
+  const envPrivateKey = process.env.WALLET_PRIVATE_KEY ?? process.env.POLYMARKET_PRIVATE_KEY
+  const envSigType = process.env.POLYMARKET_SIGNATURE_TYPE
 
-  // Perbaikan: Default signature type ke 0 (EOA) jika tidak di-set
-  if (apiKey && apiSecret && apiPassphrase && funderAddress) {
+  if (envApiKey && envApiSecret && envApiPassphrase && envFunderAddress) {
     return {
-      apiKey,
-      apiSecret,
-      apiPassphrase,
-      funderAddress,
-      privateKey: privateKey ?? '',
-      signatureType: sigTypeEnv === '1' ? 1 : 0, // Default ke EOA
+      apiKey: envApiKey,
+      apiSecret: envApiSecret,
+      apiPassphrase: envApiPassphrase,
+      funderAddress: envFunderAddress,
+      privateKey: envPrivateKey,
+      // Default signature type to 0 (EOA) if not set or invalid
+      signatureType: (envSigType === '1' || envSigType === '2') ? Number(envSigType) as 1 | 2 : 0,
     }
   }
 
+  // Prioritas 2: Credentials dari Client (localStorage / Settings UI)
   if (
     fromClient?.apiKey &&
     fromClient?.apiSecret &&
     fromClient?.apiPassphrase &&
     fromClient?.funderAddress
   ) {
-    // Perbaikan: Validasi signature type dari client
     const sigType = fromClient.signatureType ?? 0
-    if (![0, 1, 2].includes(sigType)) {
-      throw new Error('Invalid signature type. Must be 0, 1, or 2')
+    if
+ (![0, 1, 2].includes(sigType)
+) {
+      console.warn('Invalid signature type from client, defaulting to 0')
     }
 
     return {
-      apiKey:         fromClient.apiKey,
-      apiSecret:      fromClient.apiSecret,
-      apiPassphrase:  fromClient.apiPassphrase,
-      funderAddress:  fromClient.funderAddress,
-      signatureType:  sigType,
+      apiKey: fromClient.apiKey,
+      apiSecret: fromClient.apiSecret,
+      apiPassphrase: fromClient.apiPassphrase,
+      funderAddress: fromClient.funderAddress,
+      privateKey: fromClient.privateKey,
+      signatureType: [0, 1, 2].includes(sigType) ? sigType : 0,
     }
   }
 
