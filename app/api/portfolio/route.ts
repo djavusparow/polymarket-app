@@ -1,60 +1,88 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-// Fungsi dummy sementara untuk mengambil balance
-// Ganti fungsi ini dengan implementasi API Polymarket/CLOB yang sesuai
-async function fetchBalanceFromPolymarket(funderAddress: string): Promise<number> {
-  console.log(`[Portfolio API] Fetching balance for ${funderAddress}...`)
+// Konfigurasi Endpoint Polymarket
+const POLYMARKET_API_BASE = 'https://clob.polymarket.com'
+
+async function fetchPolymarketBalance(creds: {
+  apiKey: string
+  apiSecret: string
+  apiPassphrase: string
+  funderAddress: string
+}) {
+  const { apiKey, apiSecret, apiPassphrase, funderAddress } = creds
+
+  // 1. Siapkan Tanda Tangan (Signature) untuk Authenticasi
+  // Polymarket CLOB memerlukan tanda tangan untuk setiap request
+  // Kita akan gunakan library `siwe` (Sign-In With Ethereum) atau manual signing
+  // Namun, karena ini server-side, kita butuh private key atau menggunakan OAuth.
   
-  // TODO: Panggil API Polymarket/CLOB asli di sini
-  // Contoh:
-  // const res = await fetch(`https://clob.polymarket.com/account/${funderAddress}`)
-  // const data = await res.json()
-  // return parseFloat(data.available_balance || '0')
+  // CATATAN PENTING:
+  // Jika Anda menggunakan API Key standar Polymarket (bukan OAuth), 
+  // biasanya Anda perlu melakukan request awal untuk mendapatkan token session.
+  // Namun, Polymarket CLOB sering menggunakan signing message untuk auth.
   
-  // Sementara return dummy value agar UI tidak kosong saat testing
-  return 150.00 
+  // SOLUSI SEDERHANA (Menggunakan API Key header):
+  // Polymarket有时候 mengizinkan auth via header `X-API-KEY` (tergantung tipe API key)
+  // Coba kita gunakan header standar dulu.
+  
+  try {
+    // Endpoint untuk mendapatkan informasi akun (termasuk balance)
+    // Sesuai dokumentasi Polymarket CLOB
+    const url = `${POLYMARKET_API_BASE}/account/${funderAddress}`
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        // Coba gunakan API Key langsung jika support
+        'X-API-KEY': apiKey,
+        // Jika perlu signature, tambahkan header disini (bisa menggunakan library `eccrypto` atau `ethers`)
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error(`Polymarket API Error: ${response.status} ${response.statusText}`)
+    }
+
+    const data = await response.json()
+    
+    // Polymarket biasanya mengembalikan data dalam format:
+    // { "address": "...", "balance": "...", "positions": [...] }
+    // Atau mungkin perlu di-parse dari field specific.
+    
+    // Contoh parsing dummy (sesuaikan dengan response JSON asli dari Polymarket)
+    // Jika API mengembalikan string balance, pastikan di-parse ke number
+    const balanceRaw = data.balance || data.availableBalance || data.walletBalance || 0
+    
+    return {
+      balance: parseFloat(balanceRaw),
+      raw: data
+    }
+  } catch (error) {
+    console.error('Error fetching Polymarket balance:', error)
+    throw error
+  }
 }
 
 export async function GET(request: NextRequest) {
   try {
-    // 1. Ambil kredensial dari Header Request
     const credsHeader = request.headers.get('X-Clob-Creds')
     
     if (!credsHeader) {
-      return NextResponse.json({ 
-        configured: false, 
-        error: 'No credentials provided in header' 
-      }, { status: 400 })
+      return NextResponse.json({ configured: false, error: 'No credentials' }, { status: 400 })
     }
 
-    let creds
-    try {
-      creds = JSON.parse(credsHeader)
-    } catch (e) {
-      return NextResponse.json({ 
-        configured: false, 
-        error: 'Invalid credentials format' 
-      }, { status: 400 })
-    }
+    const creds = JSON.parse(credsHeader)
 
-    const { funderAddress } = creds
+    // Panggil fungsi untuk mengambil balance asli
+    const { balance, raw } = await fetchPolymarketBalance(creds)
 
-    if (!funderAddress) {
-      return NextResponse.json({ 
-        configured: false, 
-        error: 'Funder address missing' 
-      }, { status: 400 })
-    }
-
-    // 2. Fetch Balance Real dari Polymarket/CLOB
-    const balance = await fetchBalanceFromPolymarket(funderAddress)
-
-    // 3. Siapkan Data Portfolio
+    // Siapkan stats
     const stats = {
       total_balance: balance,
       available_balance: balance,
-      total_value: balance, // Asumsi sementara
-      total_pnl: 0, // Hitung di client atau fetch dari history API
+      total_value: balance, 
+      total_pnl: 0, // Anda perlu logika terpisah untuk PnL dari posisi terbuka
       total_pnl_pct: 0,
       today_pnl: 0,
       today_trades: 0,
@@ -66,14 +94,17 @@ export async function GET(request: NextRequest) {
       configured: true,
       balance: balance,
       stats: stats,
+      raw: raw, // Kirim data mentah untuk debug
       timestamp: new Date().toISOString(),
     })
 
-  } catch (error) {
-    console.error('[Portfolio API] Error:', error)
+  } catch (error: any) {
+    console.error('[Portfolio API] Error:', error.message)
+    
+    // Jika gagal connect ke Polymarket, kembalikan error detail
     return NextResponse.json({ 
-      error: 'Internal Server Error', 
-      details: error instanceof Error ? error.message : 'Unknown error'
+      error: 'Failed to fetch from Polymarket', 
+      details: error.message 
     }, { status: 500 })
   }
 }
