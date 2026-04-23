@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server'
 import { secp256k1 } from '@noble/curves/secp256k1'
 import { buildClobHeaders, resolveCredentials } from '@/lib/clob-auth'
 
-const CLOB_HOST  = 'https://polymarket-proxy.kepegawaiankcl.workers.dev'
+const CLOB_HOST  = 'https://clob.polymarket.com'
 const GAMMA_HOST = 'https://gamma-api.polymarket.com'
 const CTF_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'
 const NEG_RISK_EXCHANGE = '0xC5d563A36AE78145C45a50134d48A1215220f80a'
