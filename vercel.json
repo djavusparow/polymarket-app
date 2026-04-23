@@ -1,22 +1,22 @@
 {
   "functions": {
     "app/api/trade/execute/route.ts": {
-      "regions": ["fra1"],
+      "regions": ["hnd1"],
       "maxDuration": 60
     },
     "app/api/portfolio/route.ts": {
-      "regions": ["fra1"]
+      "regions": ["hnd1"]
     },
     "app/api/analyze/route.ts": {
-      "regions": ["fra1"]
+      "regions": ["hnd1"]
     },
     "app/api/markets/route.ts": {
-      "regions": ["fra1"]
+      "regions": ["hnd1"]
     },
     "app/api/trade/heartbeat/route.ts": {
-      "regions": ["fra1"]
+      "regions": ["hnd1"]
     }
   },
-  "regions": ["fra1"],
+  "regions": ["hnd1"],
   "crons": []
 }
