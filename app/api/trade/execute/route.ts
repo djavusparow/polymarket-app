@@ -10,7 +10,7 @@ const CTF_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'
 const NEG_RISK_EXCHANGE = '0xC5d563A36AE78145C45a50134d48A1215220f80a'
 const CHAIN_ID = 137n
 
-// --- Keccak256 Implementation (Sama seperti sebelumnya) ---
+// --- Keccak256 & Cryptography (Essential) ---
 function keccak256(input: Uint8Array): Uint8Array {
   const RATE = 136
   const RC: [number, number][] = [
@@ -136,21 +136,15 @@ function signDigest(privateKeyHex: string, digest: Uint8Array): string {
   return `0x${r}${s}${v}`
 }
 
-// --- Build Order Payload (Fixed) ---
+// --- Build Order Payload (Strict Validation) ---
 function buildOrderPayload(params: any): any {
   const { privateKey, funderAddress, tokenId, price, size, side, signatureType, negRisk } = params
 
-  if (!tokenId || typeof tokenId !== 'string' || tokenId === '') {
-    throw new Error(`Token ID must be a non-empty string. Received: ${typeof tokenId} (${tokenId})`)
-  }
-  if (!funderAddress || funderAddress === '') throw new Error('Funder Address is missing')
-  if (!privateKey || privateKey === '') throw new Error('Private Key is missing')
+  if (!tokenId) throw new Error('Token ID is missing')
+  if (!funderAddress) throw new Error('Funder Address is missing')
 
   const priceNum = Number(price)
   const sizeNum = Number(size)
-  
-  if (isNaN(priceNum) || priceNum <= 0) throw new Error(`Invalid price: ${price}`)
-  if (isNaN(sizeNum) || sizeNum <= 0) throw new Error(`Invalid size: ${size}`)
 
   const SCALE       = 1_000_000n
   const priceBig    = BigInt(Math.round(priceNum * 1_000_000))
@@ -158,10 +152,9 @@ function buildOrderPayload(params: any): any {
   
   const makerAmount = side === 'BUY'  ? (priceBig * sizeBig) / SCALE : sizeBig
   const takerAmount = side === 'BUY'  ? sizeBig : (priceBig * sizeBig) / SCALE
-  
   const salt        = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000))
 
-  const signerAddress = funderAddress
+  const signerAddress = funderAddress // Type 0: Signer is Proxy
 
   const orderStruct = {
     salt, 
@@ -190,7 +183,7 @@ function buildOrderPayload(params: any): any {
       maker:        funderAddress,
       signer:       signerAddress,
       taker:        '0x0000000000000000000000000000000000000000',
-      tokenID:      tokenId,
+      tokenID:      tokenId, // API CLOB often expects tokenID (D capital)
       makerAmount:  makerAmount.toString(),
       takerAmount:  takerAmount.toString(),
       expiration:   '0',
@@ -205,83 +198,59 @@ function buildOrderPayload(params: any): any {
   }
 }
 
-// --- Route Handler ---
+async function checkGeoBlock(): Promise<boolean> {
+  try {
+    const res = await fetch('https://polymarket.com/api/geoblock', { cache: 'no-store' })
+    const data = await res.json()
+    return data.blocked === true
+  } catch { return false }
+}
+
 export async function POST(request: Request) {
   try {
+    // 1. GeoBlock Check (As requested by support)
+    const isBlocked = await checkGeoBlock()
+    if (isBlocked) {
+      return NextResponse.json({ error: 'Trading not available in your region' }, { status: 403 })
+    }
+
     const body = await request.json() as any
+    const { market_id, question, side, size, price, credentials: clientCreds } = body
 
-    const {
-      market_id, question, side, size, price,
-      signal_confidence, ai_rationale, stop_loss_pct, take_profit_pct,
-      credentials: clientCreds,
-    } = body
-
-    // 1. Validate Credentials
     const creds = resolveCredentials(clientCreds)
     if (!creds) return NextResponse.json({ error: 'Credentials not configured.' }, { status: 401 })
 
     const privateKey = process.env.POLYMARKET_PRIVATE_KEY ?? creds.privateKey ?? clientCreds?.privateKey ?? ''
-    if (!privateKey) return NextResponse.json({ error: 'POLYMARKET_PRIVATE_KEY not set.' }, { status: 401 })
+    if (!privateKey) return NextResponse.json({ error: 'Private key missing.' }, { status: 401 })
 
     // 2. Fetch Market Data
     const marketRes = await fetch(`${GAMMA_HOST}/markets/${market_id}`, { cache: 'no-store' })
-    if (!marketRes.ok) {
-      console.warn(`[api/execute] Gamma API failed: ${marketRes.status}`)
-      return NextResponse.json({ error: 'Failed to fetch market details' }, { status: 500 })
-    }
+    if (!marketRes.ok) return NextResponse.json({ error: 'Market data fetch failed' }, { status: 500 })
     const market = await marketRes.json()
 
-    // 3. Determine Token ID (Fixed for Double-Encoded JSON)
+    // 3. Token ID Selection (Strict)
     let tokenIdsRaw = market.clobTokenIds
-    let tokenIds: string[] = []
-
-    // LOGIKA PERBAIKAN: Cek apakah clobTokenIds adalah string yang berisi JSON array
     if (typeof tokenIdsRaw === 'string') {
-      try {
-        console.log(`[api/execute] Detected clobTokenIds as string. Attempting to parse...`)
-        const parsed = JSON.parse(tokenIdsRaw)
-        if (Array.isArray(parsed)) {
-          tokenIds = parsed
-        } else {
-          console.warn(`[api/execute] Parsed data is not an array: ${JSON.stringify(parsed)}`)
-        }
-      } catch (e) {
-        console.error(`[api/execute] Failed to parse clobTokenIds string: ${e}`)
-      }
-    } else if (Array.isArray(tokenIdsRaw)) {
-      tokenIds = tokenIdsRaw
+      try { tokenIdsRaw = JSON.parse(tokenIdsRaw) } catch { tokenIdsRaw = [] }
     }
+    
+    const tokenIds = Array.isArray(tokenIdsRaw) ? tokenIdsRaw : []
+    if (tokenIds.length < 2) return NextResponse.json({ error: 'Insufficient token IDs' }, { status: 400 })
 
-    console.log(`[api/execute] Parsed tokenIds: ${JSON.stringify(tokenIds)}`)
-
-    if (tokenIds.length < 2) {
-      console.error(`[api/execute] Invalid tokenIds length: ${tokenIds.length}`)
-      return NextResponse.json({ error: `Market token IDs not found (length: ${tokenIds.length})` }, { status: 400 })
-    }
-
-    // Polymarket: tokenIds[0] = YES, tokenIds[1] = NO
     const tokenIdStr = side === 'YES' ? String(tokenIds[0]) : String(tokenIds[1])
 
-    if (!tokenIdStr || tokenIdStr === '') {
-       console.error(`[api/execute] Resolved tokenId is empty. Side: ${side}`)
-       return NextResponse.json({ error: 'Resolved Token ID is empty.' }, { status: 400 })
-    }
-
-    const negRisk = Boolean(market.neg_risk)
-
-    // 4. Price & Size Calculation
+    // 4. Precise Price Calculation (Essential for 400 errors)
     let tickSize = parseFloat(market.minimum_tick_size ?? '0.01')
     if (isNaN(tickSize) || tickSize <= 0) tickSize = 0.01
     
     const dec = Math.max(0, -Math.floor(Math.log10(tickSize)))
-    let clampedPrice = Math.max(tickSize, Math.min(parseFloat(Number(price).toFixed(dec)), 1 - tickSize))
+    // Force precision to match tick size
+    let clampedPrice = parseFloat(Number(price).toFixed(dec))
     
     if (clampedPrice <= 0 || clampedPrice >= 1) return NextResponse.json({ error: 'Price invalid' }, { status: 400 })
     if (size <= 0) return NextResponse.json({ error: 'Size invalid' }, { status: 400 })
 
     // 5. Build & Send Order
-    console.log(`[api/execute] Building order for tokenId: ${tokenIdStr}`)
-    
     const payload = buildOrderPayload({
       privateKey, 
       funderAddress: creds.funderAddress,
@@ -290,7 +259,7 @@ export async function POST(request: Request) {
       size: Number(size),
       side: side === 'YES' ? 'BUY' : 'SELL',
       signatureType: creds.signatureType ?? 0, 
-      negRisk,
+      negRisk: Boolean(market.neg_risk),
     })
 
     const bodyStr = JSON.stringify(payload)
@@ -301,43 +270,22 @@ export async function POST(request: Request) {
     })
     
     const orderData = await orderRes.json() as any
-
     if (!orderRes.ok) {
-      const errMsg = orderData?.error ?? orderData?.message ?? orderData?.errorMsg ?? `CLOB error ${orderRes.status}`
-      console.log('[api/execute] CLOB rejected:', orderRes.status, errMsg)
-      return NextResponse.json({ error: errMsg }, { status: orderRes.status })
+      console.error('[api/execute] CLOB Error:', orderData)
+      return NextResponse.json({ error: orderData?.error ?? 'Invalid order payload' }, { status: orderRes.status })
     }
-
-    // 6. Response
-    const slPct = Number(stop_loss_pct ?? 30)
-    const tpPct = Number(take_profit_pct ?? 80)
-    const stopLoss = parseFloat((clampedPrice * (1 - slPct / 100)).toFixed(4))
-    const takeProfit = parseFloat((clampedPrice * (1 + tpPct / 100)).toFixed(4))
-
-    const orderId = orderData?.orderID ?? orderData?.order_id ?? orderData?.id ?? crypto.randomUUID()
 
     return NextResponse.json({
       success: true,
-      trade_id: crypto.randomUUID(),
-      order_id: orderId,
-      condition_id: market.condition_id ?? market_id,
-      token_ids: tokenIds, // Kirim array yang sudah di-parse
+      order_id: orderData?.orderID ?? orderData?.order_id ?? crypto.randomUUID(),
       token_id: tokenIdStr,
-      status: orderData?.status ?? 'LIVE',
       price: clampedPrice,
       size,
       side,
-      stop_loss: stopLoss,
-      take_profit: takeProfit,
-      neg_risk: negRisk,
-      ai_rationale,
-      question,
-      signal_confidence,
     })
 
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e)
-    console.log('[api/execute] error:', msg)
-    return NextResponse.json({ error: msg }, { status: 500 })
+    console.error('[api/execute] Global Error:', e)
+    return NextResponse.json({ error: String(e) }, { status: 500 })
   }
 }
