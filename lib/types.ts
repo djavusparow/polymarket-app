@@ -1,3 +1,5 @@
+// lib/types.ts
+
 // ─── Polymarket Types ────────────────────────────────────────────────────────
 
 export interface PolymarketToken {
@@ -9,7 +11,7 @@ export interface PolymarketToken {
 
 export interface PolymarketMarket {
   id: string
-  condition_id: string // NOTE: Validasi di route.ts sudah dihapus, tapi tipe tetap ada
+  condition_id: string 
   question: string
   description?: string
   category?: string
@@ -17,25 +19,19 @@ export interface PolymarketMarket {
   active: boolean
   closed: boolean
   volume?: number
-  volume24hr?: number // Sesuai dokumentasi Gamma API
+  volume24hr?: number 
   liquidity?: number
   best_bid?: number
   best_ask?: number
   last_trade_price?: number
   outcomes?: string[]
-  
-  // Penyesuaian: outcomePrices diperlakukan sebagai string JSON di ai-engine.ts
-  // Jika data asli berupa array, pastikan konversi ke string JSON sebelum memanggil analyzeMarket
   outcomePrices: string 
-  
   clobTokenIds?: string[]
   tokens?: PolymarketToken[] 
   image?: string
   icon?: string
   minimum_tick_size?: number
   neg_risk?: boolean
-
-  // Field tambahan yang disarankan sebelumnya
   market_slug?: string
   maker_base_fee?: number
   taker_base_fee?: number
@@ -48,8 +44,6 @@ export interface PolymarketMarket {
     min_size: number
     rates: any | null
   }
-
-  // Field tambahan dari dokumentasi resmi terbaru
   question_id?: string
   accepting_order_timestamp?: string | null
   enable_order_book?: boolean
@@ -96,8 +90,6 @@ export interface CombinedSignal {
   noPrice: number
   recommendedSide: 'YES' | 'NO'
   timestamp: number
-  
-  // ✅ DIPERLUKAN UNTUK FIX ERROR: Property 'executed' does not exist
   executed?: boolean
 }
 
@@ -110,11 +102,11 @@ export type TradeStatus =
   | 'CANCELLED' 
   | 'STOP_LOSS' 
   | 'TAKE_PROFIT'
-  | 'MATCHED'   // CLOB API status
-  | 'MINED'     // CLOB API status
-  | 'CONFIRMED' // CLOB API status
-  | 'RETRYING'  // CLOB API status
-  | 'FAILED'    // CLOB API status
+  | 'MATCHED'   
+  | 'MINED'     
+  | 'CONFIRMED' 
+  | 'RETRYING'  
+  | 'FAILED'    
 
 export type TradeSide = 'YES' | 'NO'
 
@@ -133,7 +125,7 @@ export interface Trade {
   take_profit?: number
   pnl?: number
   pnl_pct?: number
-  status: TradeStatus  // Now accepts all CLOB statuses
+  status: TradeStatus  
   signal_confidence: number
   ai_rationale: string
   order_id?: string
@@ -145,24 +137,24 @@ export interface Trade {
 
 export interface TradingSettings {
   auto_trade_enabled: boolean
-  min_confidence: number // 0-100, default 75
-  min_trade_size: number // USDC
-  max_trade_size: number // USDC
-  default_stop_loss: number // percentage 0-100
-  default_take_profit: number // percentage 0-100
+  min_confidence: number 
+  min_trade_size: number 
+  max_trade_size: number 
+  default_stop_loss: number 
+  default_take_profit: number 
   max_open_positions: number
   max_daily_trades: number
-  max_daily_loss: number // USDC
+  max_daily_loss: number 
   enabled_categories: string[]
 }
 
 export interface AccountCredentials {
-  private_key: string  // Diperlukan untuk Wallet signer
+  private_key: string  
   api_key: string
   api_secret: string
   api_passphrase: string
   funder_address: string
-  /** 0 = EOA (MetaMask / hardware wallet), 1 = POLY_PROXY (email / Magic link) */
+  /** 0 = EOA (MetaMask), 1 = POLY_PROXY (Email), 2 = GNOSIS_SAFE */
   signature_type: 0 | 1 | 2
 }
 
@@ -171,7 +163,7 @@ export interface AccountCredentials {
 export interface PortfolioStats {
   total_balance: number
   available_balance: number
-  total_value: number // balance + open positions value
+  total_value: number 
   total_pnl: number
   total_pnl_pct: number
   today_pnl: number
