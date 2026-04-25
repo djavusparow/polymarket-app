@@ -188,7 +188,9 @@ function buildOrderPayload(params: OrderParams): any {
   const takerAmount = side === 'BUY' ? sizeBig : (priceBig * sizeBig) / SCALE
   
   const salt = generateSalt()
-  const signerAddress = funderAddress // Type 1: Signer = Proxy Wallet Address
+  
+  // Type 0: Signer is Proxy Wallet Address
+  const signerAddress = funderAddress
 
   const orderStruct = {
     salt, 
@@ -349,6 +351,7 @@ export async function POST(request: Request) {
     console.log('- Size:', size)
     console.log('- Maker Amount:', payload.order.makerAmount)
     console.log('- Taker Amount:', payload.order.takerAmount)
+    console.log('- Signature Type:', creds.signatureType)
 
     // 13. Send Order to CLOB
     const orderRes = await fetch(`${CLOB_HOST}/order`, {
