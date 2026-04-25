@@ -1,407 +1,447 @@
-// lib/trade-engine.ts
-
 import type {
-  Trade,
+  PolymarketMarket,
+  AIAnalysis,
   CombinedSignal,
-  TradingSettings,
-  PortfolioStats,
-  AccountCredentials,
-  SignalDirection
-} from './types'
+  AIModel,
+  SignalDirection,
+} from './types';
+import { parseOutcomePrice } from './polymarket';
 
-const TRADES_KEY = 'polytrade_trades'
-const SETTINGS_KEY = 'polytrade_settings'
-const CREDENTIALS_KEY = 'polytrade_credentials'
-const PORTFOLIO_KEY = 'polytrade_portfolio'
+// ────────────────────────────────────────────────────────────────────────
+// 1. ENVIRONMENT VARIABLES
+// ────────────────────────────────────────────────────────────────────────
+const NEWS_API_KEY = process.env.NEWSAPI_KEY || '';
+const BLACKBOX_API_KEY = process.env.BLACKBOX_API_KEY || '';
+// Optional – Blackbox *customerId* (perlu untuk beberapa akun)
+const BLACKBOX_CUSTOMER_ID = process.env.BLACKBOX_CUSTOMER_ID || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 
-// ─── Default Settings ───────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
+// 2. PROVIDERS CONFIGURATION
+// ────────────────────────────────────────────────────────────────────────
+const LLM_PROVIDERS = [
+  {
+    name: 'deepseek',
+    endpoint: 'https://api.deepseek.com/v1/chat/completions',
+    model: 'deepseek-chat',
+    keyHeader: 'Authorization',
+    keyPrefix: 'Bearer ',
+    key: DEEPSEEK_API_KEY,
+  },
+  {
+    name: 'blackbox',
+    endpoint: 'https://llm.blackbox.ai/chat/completions',
+    model: 'claude-3.5-sonnet',
+    keyHeader: 'Authorization',
+    keyPrefix: 'Bearer ',
+    key: BLACKBOX_API_KEY,
+  },
+  {
+    name: 'openai',
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    model: 'gpt-4o-mini',
+    keyHeader: 'Authorization',
+    keyPrefix: 'Bearer ',
+    key: OPENAI_API_KEY,
+  },
+  {
+    name: 'groq',
+    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    model: 'llama-3.1-8b-instant',
+    keyHeader: 'Authorization',
+    keyPrefix: 'Bearer ',
+    key: GROQ_API_KEY,
+  },
+] as const;
 
-export const DEFAULT_SETTINGS: TradingSettings = {
-  auto_trade_enabled: false,
-  min_confidence: 75,
-  min_trade_size: 10,
-  max_trade_size: 100,
-  default_stop_loss: 30,
-  default_take_profit: 80,
-  max_open_positions: 10,
-  max_daily_trades: 20,
-  max_daily_loss: 200,
-  enabled_categories: [],
-}
+// ────────────────────────────────────────────────────────────────────────
+// 3. PROMPTS (termasuk analisis berita)
+// ────────────────────────────────────────────────────────────────────────
+const PROMPTS = {
+  MARKET: `You are an expert prediction market analyst specializing in Polymarket.
+Your role is to analyze binary outcome markets and provide trading signals.
+Respond ONLY with valid JSON in this exact format (no markdown, no extra text):
+{
+  "signal": "BUY" | "SELL" | "HOLD",
+  "confidence": <number 0-100>,
+  "rationale": "<2-3 sentence explanation>",
+  "true_probability_yes": <number 0-1>,
+  "edge": <number -100 to 100>,
+  "target_price": <number 0-1>,
+  "stop_loss_pct": <number 0-50>,
+  "take_profit_pct": <number 0-200>
+}`,
 
-// ─── Trade Storage ────────────────────────────────────────────────────────
+  RISK: `You are a quantitative risk analyst for prediction market trading.
+Your role is to evaluate market risks and provide risk‑adjusted trading signals.
+Respond ONLY with valid JSON in this exact format:
+{
+  "signal": "BUY" | "SELL" | "HOLD",
+  "confidence": <number 0-100>,
+  "rationale": "<2-3 sentence risk assessment>",
+  "true_probability_yes": <number 0-1>,
+  "edge": <number -100 to 100>,
+  "target_price": <number 0-1>,
+  "stop_loss_pct": <number 0-50>,
+  "take_profit_pct": <number 0-200>
+}`,
 
-export function getTrades(): Trade[] {
-  if (typeof window === 'undefined') return []
+  SENTIMENT: `You are a sentiment and information analyst for prediction market trading.
+Your role is to assess information flow, sentiment, and market momentum.
+Respond ONLY with valid JSON in this exact format:
+{
+  "signal": "BUY" | "SELL" | "HOLD",
+  "confidence": <number 0-100>,
+  "rationale": "<2-3 sentence sentiment analysis>",
+  "true_probability_yes": <number 0-1>,
+  "edge": <number -100 to 100>,
+  "target_price": <number 0-1>,
+  "stop_loss_pct": <number 0-50>,
+  "take_profit_pct": <number 0-200>
+}`,
+
+  // Prompt khusus untuk menilai dampak berita (NewsAPI)
+  NEWS_ANALYST: `You are a news analyst for prediction markets.
+Your role is to evaluate recent headlines and decide how they affect the market outcome.
+Respond ONLY with valid JSON in this exact format:
+{
+  "signal": "BUY" | "SELL" | "HOLD",
+  "confidence": <number 0-100>,
+  "rationale": "<2-3 sentence explanation based on news>",
+  "true_probability_yes": <number 0-1>,
+  "edge": <number -100 to 100>,
+  "target_price": <number 0-1>,
+  "stop_loss_pct": <number 0-50>,
+  "take_profit_pct": <number 0-200>
+}`
+};
+
+// ────────────────────────────────────────────────────────────────────────
+// 4. NEWS FETCHING (NewsAPI)
+// ────────────────────────────────────────────────────────────────────────
+async function fetchNews(query: string): Promise<string> {
+  if (!NEWS_API_KEY) return ''
+  
   try {
-    return JSON.parse(localStorage.getItem(TRADES_KEY) ?? '[]')
-  } catch {
-    return []
-  }
-}
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 detik timeout
+    
+    console.log(`[NewsAPI] Fetching news for: "${query.substring(0, 30)}..."`) // Log mulai
+    
+    const res = await fetch(
+      `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&language=en&pageSize=3&apiKey=${NEWS_API_KEY}`,
+      { signal: controller.signal }
+    )
+    clearTimeout(timeoutId)
 
-export function saveTrades(trades: Trade[]): void {
-  if (typeof window === 'undefined') return
-  localStorage.setItem(TRADES_KEY, JSON.stringify(trades))
-}
-
-export function addTrade(trade: Trade): void {
-  const trades = getTrades()
-  trades.unshift(trade)
-  saveTrades(trades)
-}
-
-export function updateTrade(id: string, updates: Partial<Trade>): void {
-  const trades = getTrades()
-  const idx = trades.findIndex((t) => t.id === id)
-  if (idx !== -1) {
-    trades[idx] = { ...trades[idx], ...updates }
-    saveTrades(trades)
-  }
-}
-
-export function getOpenTrades(): Trade[] {
-  return getTrades().filter((t) => t.status === 'OPEN' || t.status === 'PENDING')
-}
-
-// ─── Settings Storage ─────────────────────────────────────────────────────
-
-export function getSettings(): TradingSettings {
-  if (typeof window === 'undefined') return DEFAULT_SETTINGS
-  try {
-    const stored = localStorage.getItem(SETTINGS_KEY)
-    return stored ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) } : DEFAULT_SETTINGS
-  } catch {
-    return DEFAULT_SETTINGS
-  }
-}
-
-export function saveSettings(settings: TradingSettings): void {
-  if (typeof window === 'undefined') return
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
-}
-
-// ─── Credentials Storage ───────────────────────────────────────────────────
-
-export function getCredentials(): AccountCredentials | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const stored = localStorage.getItem(CREDENTIALS_KEY)
-    return stored ? JSON.parse(stored) : null
-  } catch {
-    return null
-  }
-}
-
-export function saveCredentials(creds: AccountCredentials): void {
-  if (typeof window === 'undefined') return
-  localStorage.setItem(CREDENTIALS_KEY, JSON.stringify(creds))
-}
-
-export function clearCredentials(): void {
-  if (typeof window === 'undefined') return
-  localStorage.removeItem(CREDENTIALS_KEY)
-}
-
-// ─── Portfolio Stats Storage ───────────────────────────────────────────────
-
-export function getPortfolioStats(): PortfolioStats {
-  if (typeof window === 'undefined') return defaultPortfolio()
-  try {
-    const stored = localStorage.getItem(PORTFOLIO_KEY)
-    return stored ? JSON.parse(stored) : defaultPortfolio()
-  } catch {
-    return defaultPortfolio()
-  }
-}
-
-export function savePortfolioStats(stats: PortfolioStats): void {
-  if (typeof window === 'undefined') return
-  localStorage.setItem(PORTFOLIO_KEY, JSON.stringify(stats))
-}
-
-function defaultPortfolio(): PortfolioStats {
-  return {
-    total_balance: 0,
-    available_balance: 0,
-    total_value: 0,
-    total_pnl: 0,
-    total_pnl_pct: 0,
-    today_pnl: 0,
-    today_trades: 0,
-    win_rate: 0,
-    open_positions: 0,
-  }
-}
-
-// ─── Fixed P&L Calculation for Prediction Markets ───────────────────────
-
-export function calculateTradePnL(trade: Trade): {
-  pnl: number
-  pnl_pct: number
-} {
-  const currentPrice = trade.current_price ?? trade.entry_price
-  const shares = trade.size / trade.entry_price
-  const pnl = (currentPrice - trade.entry_price) * shares
-  const pnl_pct = ((currentPrice - trade.entry_price) / trade.entry_price) * 100
-  return { pnl, pnl_pct }
-}
-
-// ─── Portfolio Stats Calculation ───────────────────────────────────────────
-
-export function calculatePortfolioStats(): PortfolioStats {
-  const trades = getTrades()
-  const openTrades = trades.filter((t) => t.status === 'OPEN')
-  const closedTrades = trades.filter((t) =>
-    ['CLOSED', 'STOP_LOSS', 'TAKE_PROFIT'].includes(t.status)
-  )
-
-  const totalPnl = closedTrades.reduce((sum, t) => {
-    const exitPrice = t.exit_price ?? t.entry_price
-    const shares = t.size / t.entry_price
-    return sum + (exitPrice - t.entry_price) * shares
-  }, 0)
-
-  const todayStart = new Date().setHours(0, 0, 0, 0)
-  const todayPnl = closedTrades
-    .filter((t) => (t.closed_at ?? 0) >= todayStart)
-    .reduce((sum, t) => {
-      const exitPrice = t.exit_price ?? t.entry_price
-      const shares = t.size / t.entry_price
-      return sum + (exitPrice - t.entry_price) * shares
-    }, 0)
-
-  const winners = closedTrades.filter((t) => {
-    const exitPrice = t.exit_price ?? t.entry_price
-    const shares = t.size / t.entry_price
-    return (exitPrice - t.entry_price) * shares > 0
-  }).length
-
-  const winRate = closedTrades.length > 0 ? (winners / closedTrades.length) * 100 : 0
-  const todayTrades = trades.filter((t) => t.opened_at >= todayStart).length
-
-  return {
-    total_balance: 0,
-    available_balance: 0,
-    total_value: 0,
-    total_pnl: totalPnl,
-    total_pnl_pct: totalPnl > 0 ? (totalPnl / (trades.reduce((sum, t) => sum + t.size, 0) || 1)) * 100 : 0,
-    today_pnl: todayPnl,
-    today_trades: todayTrades,
-    win_rate: winRate,
-    open_positions: openTrades.length,
-  }
-}
-
-// ─── Credential Validation ─────────────────────────────────────────────────
-
-function validateCredentials(
-  creds: AccountCredentials
-): { valid: boolean; error?: string } {
-  if (!creds) return { valid: false, error: 'Credentials required' }
-
-  if (!creds.api_key?.trim()) {
-    return { valid: false, error: 'API key required' }
-  }
-  if (!creds.api_secret?.trim()) {
-    return { valid: false, error: 'API secret required' }
-  }
-  if (!creds.api_passphrase?.trim()) {
-    return { valid: false, error: 'API passphrase required' }
-  }
-  if (!creds.funder_address?.trim()) {
-    return { valid: false, error: 'Funder address required' }
-  }
-  if (!creds.funder_address.match(/^0x[a-fA-F0-9]{40}$/)) {
-    return { valid: false, error: 'Invalid funder address format' }
-  }
-
-  const sig = creds.signature_type ?? 0
-  if (![0, 1, 2].includes(sig)) {
-    return {
-      valid: false,
-      error: 'Signature type must be 0 (EOA), 1 or 2',
+    if (!res.ok) {
+        console.log(`[NewsAPI] Status ${res.status} (No data or limit reached)`)
+        return ''
     }
-  }
+    
+    const data = await res.json()
+    
+    if (!data.articles || data.articles.length === 0) {
+        console.log(`[NewsAPI] No articles found`)
+        return ''
+    }
 
-  return { valid: true }
+    const recent = data.articles
+      .slice(0, 3)
+      .map((a: any) => `- ${a.title} (${a.source?.name || 'Unknown'})`)
+      .join('\n')
+    
+    console.log(`[NewsAPI] Found ${data.articles.length} articles`) // Log selesai
+    
+    return `\n\nLATEST NEWS:\n${recent}`
+  } catch (e) {
+    console.warn('[NewsAPI] Fetch error:', e)
+    return ''
+  }
 }
 
-// ─── Auto Trade Executor ─────────────────────────────────────────────────────
+// ────────────────────────────────────────────────────────────────────────
+// 5. CALL LLM – penanganan DeepSeek + Blackbox, parsing toleran
+// ────────────────────────────────────────────────────────────────────────
+async function callLLM(
+  provider: typeof LLM_PROVIDERS[number],
+  prompt: string,
+  context: string
+): Promise<AIAnalysis | null> {
+  if (!provider.key || provider.key.trim() === '') return null;
 
-export async function executeAutoTrade(
-  signal: CombinedSignal,
-  settings: TradingSettings,
-  retryCount = 0
-): Promise<{ success: boolean; trade?: Trade; error?: string }> {
-  if (!settings.auto_trade_enabled) {
-    return { success: false, error: 'Auto trading disabled' }
-  }
-  if (signal.confidence < settings.min_confidence) {
-    return {
-      success: false,
-      error: `Confidence ${signal.confidence}% below minimum ${settings.min_confidence}%`,
-    }
-  }
+  console.log(`[callLLM] ${provider.name} → ${provider.model}`);
 
-  const openTrades = getOpenTrades()
-  if (openTrades.length >= settings.max_open_positions) {
-    return { success: false, error: 'Maximum open positions reached' }
-  }
-
-  const todayStart = new Date().setHours(0, 0, 0, 0)
-  const todayTrades = getTrades().filter((t) => t.opened_at >= todayStart)
-  if (todayTrades.length >= settings.max_daily_trades) {
-    return { success: false, error: 'Daily trade limit reached' }
-  }
-
-  const confidenceMultiplier = Math.min(signal.confidence / 100, 1)
-  const tradeSize = Math.round(
-    settings.min_trade_size +
-      (settings.max_trade_size - settings.min_trade_size) * confidenceMultiplier
-  )
-
-  const price = signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice
-
-  const storedCreds = getCredentials()
-  if (!storedCreds) {
-    return { success: false, error: 'API credentials not configured' }
-  }
-
-  const credCheck = validateCredentials(storedCreds)
-  if (!credCheck.valid) {
-    return { success: false, error: credCheck.error }
-  }
-
-  const stopLossPct = settings.default_stop_loss / 100
-  const takeProfitPct = settings.default_take_profit / 100
-
-  const stopLossPrice =
-    signal.recommendedSide === 'YES'
-      ? Math.max(0.01, price - price * stopLossPct)
-      : Math.min(0.99, price + price * stopLossPct)
-
-  const takeProfitPrice =
-    signal.recommendedSide === 'YES'
-      ? Math.min(0.99, price + price * takeProfitPct)
-      : Math.max(0.01, price - price * takeProfitPct)
+  const ctrl = new AbortController();
+  const timeoutId = setTimeout(() => ctrl.abort(), 45_000); // 45 s timeout
 
   try {
-    const res = await fetch('/api/trade/execute', {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      [provider.keyHeader]: `${provider.keyPrefix}${provider.key}`,
+    };
+
+    // ---- Blackbox: tambahkan customerId bila tersedia ----
+    if (provider.name === 'blackbox' && BLACKBOX_CUSTOMER_ID) {
+      headers['customerId'] = BLACKBOX_CUSTOMER_ID;
+    }
+
+    const res = await fetch(provider.endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
-        market_id: signal.market_id,
-        question: signal.question,
-        side: signal.recommendedSide,
-        size: tradeSize,
-        price: price,
-        signal_confidence: signal.confidence,
-        ai_rationale: signal.analyses.map((a) => a.rationale).join(' | '),
-        stop_loss_pct: settings.default_stop_loss,
-        take_profit_pct: settings.default_take_profit,
-        stop_loss_price: stopLossPrice,
-        take_profit_price: takeProfitPrice,
-        credentials: {
-          apiKey: storedCreds.api_key,
-          apiSecret: storedCreds.api_secret,
-          apiPassphrase: storedCreds.api_passphrase,
-          funderAddress: storedCreds.funder_address,
-          signatureType: storedCreds.signature_type ?? 0,
-        },
+        model: provider.model,
+        messages: [
+          { role: 'system', content: prompt },
+          { role: 'user', content: context },
+        ],
+        temperature: 0.3,
+        max_tokens: 150,
       }),
-    })
+      signal: ctrl.signal,
+    });
 
-    const result = await res.json()
+    clearTimeout(timeoutId);
 
-    if (!res.ok || result.error) {
-      return {
-        success: false,
-        error: result.error ?? 'Trade execution failed',
+    if (!res.ok) {
+      const txt = await res.text();
+      console.error(`[${provider.name}] ❌ HTTP ${res.status}: ${txt.slice(0, 120)}...`);
+      return null;
+    }
+
+    const data = await res.json();
+    const raw = data?.choices?.[0]?.message?.content ?? '';
+
+    // ---------- EXTRACT JSON (toleran) ----------
+    let jsonStr = raw.trim();
+
+    // 1️⃣ Cari blok ```json ... ```
+    const fencedJson = jsonStr.match(/```json\s*([\s\S]*?)\s*```/);
+    if (fencedJson) jsonStr = fencedJson[1];
+    else {
+      // 2️⃣ Cari blok ``` ... ```
+      const fenced = jsonStr.match(/```([\s\S]*?)```/);
+      if (fenced) jsonStr = fenced[1];
+      else {
+        // 3️⃣ Cari objek JSON pertama { … } terakhir }
+        const first = jsonStr.indexOf('{');
+        const last = jsonStr.lastIndexOf('}');
+        if (first !== -1 && last !== -1 && last > first) {
+          jsonStr = jsonStr.substring(first, last + 1);
+        }
       }
     }
 
-    const expectedTokenId =
-      signal.recommendedSide === 'YES'
-        ? result.token_ids?.[0] ?? result.token_id ?? ''
-        : result.token_ids?.[1] ?? ''
+    // 4️⃣ Hapus karakter yang tak diperlukan (newline, carriage‑return)
+    jsonStr = jsonStr.replace(/\r?\n/g, '').trim();
 
-    const trade: Trade = {
-      id: result.trade_id ?? crypto.randomUUID(),
-      market_id: signal.market_id,
-      condition_id: result.condition_id ?? '',
-      question: signal.question,
-      side: signal.recommendedSide,
-      token_id: expectedTokenId,
-      size: tradeSize,
-      entry_price: price,
-      current_price: price,
-      stop_loss: stopLossPrice,
-      take_profit: takeProfitPrice,
-      status: 'OPEN',
-      signal_confidence: signal.confidence,
-      ai_rationale: signal.analyses
-        .map((a) => `[${a.model}] ${a.rationale}`)
-        .join('\n'),
-      order_id: result.order_id,
-      opened_at: Date.now(),
+    // 5️⃣ Jika masih tidak berakhir dengan '}' – potong sampai brace terakhir
+    const lastBrace = jsonStr.lastIndexOf('}');
+    if (lastBrace !== -1 && lastBrace < jsonStr.length - 1) {
+      jsonStr = jsonStr.substring(0, lastBrace + 1);
     }
 
-    addTrade(trade)
-    return { success: true, trade }
-  } catch (e: unknown) {
-    const errorMessage = e instanceof Error ? e.message : 'Network error'
-    if (retryCount < 1 && errorMessage.toLowerCase().includes('network')) {
-      await new Promise((resolve) => setTimeout(resolve, 2000))
-      return executeAutoTrade(signal, settings, retryCount + 1)
+    let parsed: any;
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch (e) {
+      console.error(
+        `[${provider.name}] ❌ JSON Parse Error. Raw content (first 200 chars):`,
+        raw.substring(0, 200)
+      );
+      // ---- Fallback ringan: ekstrak field secara regex ----
+      const fallback = (key: string) => {
+        const m = raw.match(new RegExp(`"${key}"\\s*:\\s*"?([^",}\\n]+)"?`, 'i'));
+        return m ? m[1].trim() : undefined;
+      };
+      const signal = fallback('signal') as SignalDirection | undefined;
+      const confidence = Number(fallback('confidence'));
+      if (!signal || isNaN(confidence)) return null;
+      parsed = {
+        signal,
+        confidence,
+        rationale: fallback('rationale') || '',
+        true_probability_yes: Number(fallback('true_probability_yes')) || 0.5,
+        edge: Number(fallback('edge')) || 0,
+        target_price: Number(fallback('target_price')) || 0.5,
+        stop_loss_pct: Number(fallback('stop_loss_pct')) || 20,
+        take_profit_pct: Number(fallback('take_profit_pct')) || 50,
+      };
     }
-    return { success: false, error: errorMessage }
+
+    // --------‑ Validasi wajib ---------
+    if (!parsed.signal || !['BUY', 'SELL', 'HOLD'].includes(parsed.signal))
+      return null;
+    if (typeof parsed.confidence !== 'number' || parsed.confidence < 0 || parsed.confidence > 100)
+      return null;
+
+    console.log(`[${provider.name}] ✅ Success! Confidence: ${parsed.confidence}`);
+
+    return {
+      model: provider.name as AIModel,
+      signal: parsed.signal as SignalDirection,
+      confidence: parsed.confidence,
+      rationale: String(parsed.rationale || ''),
+      targetPrice: Number(parsed.target_price) || 0.5,
+      stopLoss: Number(parsed.stop_loss_pct) || 20,
+      takeProfit: Number(parsed.take_profit_pct) || 50,
+      timestamp: Date.now(),
+    };
+  } catch (err) {
+    clearTimeout(timeoutId);
+    console.error(`[${provider.name}] ❌ Error:`, err);
+    return null;
   }
 }
 
-export function updateTradeWithPrice(
-  tradeId: string,
-  newPrice: number
-): void {
-  const trades = getTrades()
-  const idx = trades.findIndex((t) => t.id === tradeId)
-  if (idx === -1) return
+// ────────────────────────────────────────────────────────────────────────
+// 6. ENSEMBLE LOGIC
+// ────────────────────────────────────────────────────────────────────────
+function ensemble(
+  analyses: AIAnalysis[]
+): { direction: SignalDirection; confidence: number; recommendedSide: 'YES' | 'NO' } {
+  const valid = analyses.filter((a) => a.confidence > 0);
+  if (!valid.length) return { direction: 'HOLD', confidence: 0, recommendedSide: 'YES' };
 
-  const trade = trades[idx]
-  const stopLoss = trade.stop_loss ?? (trade.side === 'YES' ? 0 : 1)
-  const takeProfit = trade.take_profit ?? (trade.side === 'YES' ? 1 : 0)
+  const buyScore = valid.filter((a) => a.signal === 'BUY').reduce((s, a) => s + a.confidence, 0);
+  const sellScore = valid.filter((a) => a.signal === 'SELL').reduce((s, a) => s + a.confidence, 0);
+  const totalScore = buyScore + sellScore;
+  const avgConf = valid.reduce((s, a) => s + a.confidence, 0) / valid.length;
 
-  const shares = trade.size / trade.entry_price
-  const pnl = (newPrice - trade.entry_price) * shares
-  const pnl_pct = ((newPrice - trade.entry_price) / trade.entry_price) * 100
-
-  let newStatus = trade.status
-
-  if (
-    (trade.side === 'YES' && newPrice <= stopLoss) ||
-    (trade.side === 'NO' && newPrice >= stopLoss)
-  ) {
-    newStatus = 'STOP_LOSS'
-  } else if (
-    (trade.side === 'YES' && newPrice >= takeProfit) ||
-    (trade.side === 'NO' && newPrice <= takeProfit)
-  ) {
-    newStatus = 'TAKE_PROFIT'
+  if (totalScore === 0) {
+    return { direction: 'HOLD', confidence: Math.round(avgConf * 0.5), recommendedSide: 'YES' };
   }
 
-  const isClosed = ['STOP_LOSS', 'TAKE_PROFIT', 'CLOSED'].includes(newStatus)
+  if (buyScore > sellScore && buyScore / totalScore > 0.4) {
+    return { direction: 'BUY', confidence: Math.round((buyScore / totalScore) * avgConf), recommendedSide: 'YES' };
+  }
+  if (sellScore > buyScore && sellScore / totalScore > 0.4) {
+    return { direction: 'SELL', confidence: Math.round((sellScore / totalScore) * avgConf), recommendedSide: 'NO' };
+  }
+  return { direction: 'HOLD', confidence: Math.round(avgConf * 0.5), recommendedSide: 'YES' };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// 7. MAIN ANALYSIS FUNCTION
+// ────────────────────────────────────────────────────────────────────────
+export async function analyzeMarket(market: PolymarketMarket): Promise<CombinedSignal> {
+  const startTime = Date.now()
+  console.log(`[analyzeMarket] Starting for: ${market.id}`)
   
-  trades[idx] = {
-    ...trade,
-    current_price: newPrice,
-    pnl,
-    pnl_pct,
-    status: newStatus,
-    ...(isClosed && {
-      exit_price: newPrice,
-      closed_at: Date.now(),
-    }),
+  try {
+    const yesPrice = parseOutcomePrice(market.outcomePrices)
+    const baseContext = buildMarketContext(market)
+    
+    // 1. Fetch News
+    const news = await fetchNews(market.question)
+    
+    // Gabungkan base context DENGAN news
+    const fullContext = baseContext + news
+
+    // 2. Siapkan Provider
+    const activeProviders = LLM_PROVIDERS.filter(p => p.key && p.key.trim() !== '')
+    
+    if (activeProviders.length === 0) {
+      console.error('[analyzeMarket] ❌ CRITICAL: No API keys configured!')
+      return getDefaultSignal(market, yesPrice)
+    }
+
+    console.log(`[analyzeMarket] Active providers: ${activeProviders.map(p => p.name).join(', ')}`)
+
+    const getProvider = (index: number) => activeProviders[index % activeProviders.length]
+    
+    const results = await Promise.all([
+      // 1. Market Analyst
+      callLLM(getProvider(0), PROMPTS.MARKET, fullContext),
+      // 2. Risk Analyst
+      callLLM(getProvider(1), PROMPTS.RISK, fullContext),
+      // 3. Sentiment Analyst
+      callLLM(getProvider(2), PROMPTS.SENTIMENT, fullContext),
+      // 4. LLM Tambahan (Agar ada 4 AI)
+      callLLM(getProvider(3), PROMPTS.MARKET, fullContext),
+      // 5. NEWS ANALYST
+      // Kita kirim fullContext (yang sudah termasuk berita) agar dia punya info harga & volume
+      callLLM(getProvider(0), PROMPTS.NEWS_ANALYST, fullContext) 
+    ])
+
+    // 4. Gabungkan hasil
+    const analyses = results.filter(Boolean) as AIAnalysis[]
+    console.log(`[analyzeMarket] Completed in ${Date.now() - startTime}ms. Success: ${analyses.length}/${results.length}`)
+
+    const ensembleResult = ensemble(analyses)
+
+    return {
+      market_id: market.id,
+      question: market.question,
+      direction: ensembleResult.direction,
+      confidence: ensembleResult.confidence,
+      analyses,
+      yesPrice,
+      noPrice: 1 - yesPrice,
+      recommendedSide: ensembleResult.recommendedSide,
+      timestamp: Date.now()
+    }
+  } catch (e) {
+    console.error('[analyzeMarket] ERROR:', e)
+    throw e
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Helper: build market context string
+// ────────────────────────────────────────────────────────────────────────
+function buildMarketContext(market: PolymarketMarket): string {
+  const yesPrice = parseOutcomePrice(market.outcomePrices);
+  const volume = (market.volume24hr || 0).toLocaleString();
+  return `MARKET: ${market.question}
+CATEGORY: ${market.category || 'General'}
+YES: ${(yesPrice * 100).toFixed(1)}% | NO: ${(100 - yesPrice * 100).toFixed(1)}%
+VOL 24H: $${volume}
+END: ${market.end_date_iso ? new Date(market.end_date_iso).toLocaleDateString() : 'TBD'}
+
+Analyze and return JSON signal.`;
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Helper: default signal bila semua gagal
+// ────────────────────────────────────────────────────────────────────────
+function getDefaultSignal(market: PolymarketMarket, yesPrice: number): CombinedSignal {
+  return {
+    market_id: market.id,
+    question: market.question,
+    direction: 'HOLD',
+    confidence: 0,
+    analyses: [],
+    yesPrice,
+    noPrice: 1 - yesPrice,
+    recommendedSide: 'YES',
+    timestamp: Date.now(),
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// 8. BATCH ANALYSIS (opsional)
+// ────────────────────────────────────────────────────────────────────────
+export async function analyzeMarketsBatch(markets: PolymarketMarket[]): Promise<CombinedSignal[]> {
+  const signals: CombinedSignal[] = [];
+  const CONCURRENCY = 3;
+  let completed = 0;
+
+  for (let i = 0; i < markets.length; i += CONCURRENCY) {
+    const batch = markets.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map(async (m) => {
+        const sig = await analyzeMarket(m);
+        completed++;
+        if (completed % 5 === 0) console.log(`Batch progress: ${Math.round((completed / markets.length) * 100)}%`);
+        return sig;
+      })
+    );
+    signals.push(...batchResults);
+    if (i + CONCURRENCY < markets.length) await new Promise((r) => setTimeout(r, 1_000));
   }
 
-  saveTrades(trades)
+  return signals.sort((a, b) => b.confidence - a.confidence);
 }
