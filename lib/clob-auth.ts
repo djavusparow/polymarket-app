@@ -9,7 +9,7 @@ const POLY_API_KEY       = process.env.POLY_API_KEY ?? ''
 const POLY_SECRET        = process.env.POLY_SECRET ?? ''
 const POLY_PASSPHRASE    = process.env.POLY_PASSPHRASE ?? ''
 const FUNDER_ADDRESS     = process.env.FUNDER_ADDRESS ?? ''
-const SIGNATURE_TYPE     = parseInt(process.env.SIGNATURE_TYPE ?? '1', 10)
+const SIGNATURE_TYPE     = parseInt(process.env.SIGNATURE_TYPE ?? '0', 10)
 const POLY_PRIVATE_KEY   = process.env.POLY_PRIVATE_KEY ?? ''
 
 // Builder Attribution
@@ -122,7 +122,7 @@ function keccak256(input: Uint8Array): Uint8Array {
         s[j*2+1] = n < 32 ? rotl32(t1, n)    : rotl32(t0, n-32)
         if (i < 23) { t0 = c0; t1 = c1 }
       }
-      for (let y = 0; y < 50; y += 10) {
+      for ( let y = 0; y < 50; y += 10) {
         const t = s.slice(y, y+10)
         for (let x = 0; x < 10; x += 2) {
           s[y+x]   = t[x]   ^ (~t[(x+2)%10] & t[(x+4)%10])
@@ -217,7 +217,7 @@ export async function buildClobHeaders(
   const msgBytes = new TextEncoder().encode(`${method.toUpperCase()}${normalizedPath}${timestamp}`)
   const msgHash = hashBytes(msgBytes)
   
-  // Final digest: keccak256(0x19 + version_byte + domainSeparator + msgHash + bodyHash)
+  // Final digest: keccak256(0x19 + 0x01 + domainSeparator + msgHash + bodyHash)
   const signableBytes = concat(
     new Uint8Array([0x19, 0x01]), // Standard EIP-191 prefix
     domainSeparator,
