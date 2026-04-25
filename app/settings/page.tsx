@@ -1,3 +1,5 @@
+// settings/page.tsx
+
 'use client'
 
 import { useState, useEffect } from 'react'
@@ -114,7 +116,6 @@ export default function SettingsPage() {
       const data = await res.json()
       
       if (data.error) {
-        // Specific error handling for invalid signatures
         if (data.error.includes('Invalid signature') || data.error.includes('authentication failed')) {
            setTestResult({ ok: false, msg: 'Auth failed: Invalid credentials or signature type mismatch.' })
         } else {
@@ -234,7 +235,7 @@ python3 -c "
 from py_clob_client.client import ClobClient
 c = ClobClient('https://clob.polymarket.com',
   key='0xYOUR_PRIVATE_KEY', chain_id=137,
-  signature_type=0,  # 1=Email/Magic, 0=MetaMask, 2=GNOSIS_SAFE
+  signature_type=0,  # 0=MetaMask/EOA (Recommended)
   funder='0xYOUR_FUNDER_ADDRESS')
 r = c.create_or_derive_api_creds()
 print('API Key:', r.api_key)
