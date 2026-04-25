@@ -2,15 +2,19 @@
 
 import { NextResponse } from 'next/server'
 import { secp256k1 } from '@noble/curves/secp256k1'
-import { buildClobHeaders, resolveCredentials } from '@/lib/clob-auth'
+import { buildClobHeaders, resolveCredentials, generateSalt } from '@/lib/clob-auth'
 
 const CLOB_HOST  = 'https://clob.polymarket.com'
 const GAMMA_HOST = 'https://gamma-api.polymarket.com'
+
+// Contract addresses
 const CTF_EXCHANGE = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'
 const NEG_RISK_EXCHANGE = '0xC5d563A36AE78145C45a50134d48A1215220f80a'
 const CHAIN_ID = 137n
 
-// --- Keccak256 & Cryptography (Essential) ---
+// ==============================================
+// Cryptography Helpers
+// ==============================================
 function keccak256(input: Uint8Array): Uint8Array {
   const RATE = 136
   const RC: [number, number][] = [
@@ -25,6 +29,7 @@ function keccak256(input: Uint8Array): Uint8Array {
   ]
   const PILN = [10,7,11,17,18,3,5,16,8,21,24,4,15,23,19,13,12,2,20,14,22,9,6,1]
   const ROTC = [1,3,6,10,15,21,28,36,45,55,2,14,27,41,56,8,25,43,62,18,39,61,20,44]
+  
   function rotl32(v: number, n: number) { return ((v << n) | (v >>> (32-n))) >>> 0 }
 
   const padLen = RATE - (input.length % RATE)
@@ -127,7 +132,7 @@ function buildOrderHash(o: any): Uint8Array {
   ))
 }
 
-function signDigest(privateKeyHex: string, digest: Uint8Array): string {
+function signOrderDigest(privateKeyHex: string, digest: Uint8Array): string {
   const pkHex = privateKeyHex.startsWith('0x') ? privateKeyHex.slice(2) : privateKeyHex
   const sig = secp256k1.sign(digest, pkHex, { lowS: true })
   const r = sig.r.toString(16).padStart(64, '0')
@@ -136,8 +141,33 @@ function signDigest(privateKeyHex: string, digest: Uint8Array): string {
   return `0x${r}${s}${v}`
 }
 
-// --- Build Order Payload (Strict Validation) ---
-function buildOrderPayload(params: any): any {
+// ==============================================
+// GeoBlock Check
+// ==============================================
+async function checkGeoBlock(): Promise<boolean> {
+  try {
+    const res = await fetch('https://polymarket.com/api/geoblock', { cache: 'no-store' })
+    const data = await res.json()
+    return data.blocked === true
+  } catch { return false }
+}
+
+// ==============================================
+// Build Order Payload
+// ==============================================
+interface OrderParams {
+  privateKey: string
+  funderAddress: string
+  tokenId: string
+  price: number
+  size: number
+  side: 'BUY' | 'SELL'
+  signatureType: number
+  negRisk: boolean
+  builderCode?: string
+}
+
+function buildOrderPayload(params: OrderParams): any {
   const { privateKey, funderAddress, tokenId, price, size, side, signatureType, negRisk } = params
 
   if (!tokenId) throw new Error('Token ID is missing')
@@ -146,15 +176,19 @@ function buildOrderPayload(params: any): any {
   const priceNum = Number(price)
   const sizeNum = Number(size)
 
-  const SCALE       = 1_000_000n
-  const priceBig    = BigInt(Math.round(priceNum * 1_000_000))
-  const sizeBig     = BigInt(Math.round(sizeNum  * 1_000_000))
-  
-  const makerAmount = side === 'BUY'  ? (priceBig * sizeBig) / SCALE : sizeBig
-  const takerAmount = side === 'BUY'  ? sizeBig : (priceBig * sizeBig) / SCALE
-  const salt        = BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 1000))
+  if (isNaN(priceNum) || priceNum <= 0 || priceNum >= 1) throw new Error(`Invalid price: ${price}`)
+  if (isNaN(sizeNum) || sizeNum <= 0) throw new Error(`Invalid size: ${size}`)
 
-  const signerAddress = funderAddress // Type 0: Signer is Proxy
+  const SCALE = 1_000_000n
+  const priceBig = BigInt(Math.round(priceNum * 1_000_000))
+  const sizeBig = BigInt(Math.round(sizeNum * 1_000_000))
+  
+  // BUY: maker pays price * size, SELL: maker pays size
+  const makerAmount = side === 'BUY' ? (priceBig * sizeBig) / SCALE : sizeBig
+  const takerAmount = side === 'BUY' ? sizeBig : (priceBig * sizeBig) / SCALE
+  
+  const salt = generateSalt()
+  const signerAddress = funderAddress // Type 1: Signer = Proxy Wallet Address
 
   const orderStruct = {
     salt, 
@@ -171,121 +205,189 @@ function buildOrderPayload(params: any): any {
     signatureType,
   }
 
-  const contract        = negRisk ? NEG_RISK_EXCHANGE : CTF_EXCHANGE
+  // Determine contract
+  const contract = negRisk ? NEG_RISK_EXCHANGE : CTF_EXCHANGE
+  
+  // Build EIP-712 domain separator
   const domainSeparator = buildDomainSeparator(contract)
-  const orderHash       = buildOrderHash(orderStruct)
-  const digest          = keccak256(concat(new Uint8Array([0x19, 0x01]), domainSeparator, orderHash))
-  const signature       = signDigest(privateKey, digest)
+  
+  // Build order hash
+  const orderHash = buildOrderHash(orderStruct)
+  
+  // Build signable digest: 0x19 + 0x01 + domainSeparator + orderHash
+  const digest = keccak256(concat(
+    new Uint8Array([0x19, 0x01]),
+    domainSeparator,
+    orderHash,
+  ))
 
-  return {
-    order: {
-      salt:         salt.toString(),
-      maker:        funderAddress,
-      signer:       signerAddress,
-      taker:        '0x0000000000000000000000000000000000000000',
-      tokenID:      tokenId, // API CLOB often expects tokenID (D capital)
-      makerAmount:  makerAmount.toString(),
-      takerAmount:  takerAmount.toString(),
-      expiration:   '0',
-      nonce:        '0',
-      feeRateBps:   '0',
-      side:         side === 'BUY' ? 0 : 1,
-      signatureType,
-      signature,
-      orderType:    'GTC',
-    },
+  // Sign the digest
+  const signature = signOrderDigest(privateKey, digest)
+
+  // Build the final order payload
+  const order = {
+    salt: salt.toString(),
+    maker: funderAddress,
+    signer: signerAddress,
+    taker: '0x0000000000000000000000000000000000000000',
+    tokenId: tokenId, // String format
+    makerAmount: makerAmount.toString(),
+    takerAmount: takerAmount.toString(),
+    expiration: '0',
+    nonce: '0',
+    feeRateBps: '0',
+    side: side === 'BUY' ? 0 : 1,
+    signatureType,
+    signature,
     orderType: 'GTC',
   }
+
+  return { order, orderType: 'GTC' }
 }
 
-async function checkGeoBlock(): Promise<boolean> {
-  try {
-    const res = await fetch('https://polymarket.com/api/geoblock', { cache: 'no-store' })
-    const data = await res.json()
-    return data.blocked === true
-  } catch { return false }
-}
-
+// ==============================================
+// POST Handler
+// ==============================================
 export async function POST(request: Request) {
   try {
-    // 1. GeoBlock Check (As requested by support)
+    // 1. GeoBlock Check (Wajib - sesuai anjuran Polymarket)
     const isBlocked = await checkGeoBlock()
     if (isBlocked) {
-      return NextResponse.json({ error: 'Trading not available in your region' }, { status: 403 })
+      return NextResponse.json({ 
+        error: 'Trading not available in your region' 
+      }, { status: 403 })
     }
 
+    // 2. Parse Request Body
     const body = await request.json() as any
-    const { market_id, question, side, size, price, credentials: clientCreds } = body
+    const { market_id, side, size, price, credentials: clientCreds } = body
 
+    // 3. Resolve Credentials
     const creds = resolveCredentials(clientCreds)
-    if (!creds) return NextResponse.json({ error: 'Credentials not configured.' }, { status: 401 })
+    if (!creds) {
+      return NextResponse.json({ 
+        error: 'Credentials not configured. Please set POLY_API_KEY, POLY_SECRET, POLY_PASSPHRASE, FUNDER_ADDRESS, and POLY_PRIVATE_KEY' 
+      }, { status: 401 })
+    }
 
-    const privateKey = process.env.POLYMARKET_PRIVATE_KEY ?? creds.privateKey ?? clientCreds?.privateKey ?? ''
-    if (!privateKey) return NextResponse.json({ error: 'Private key missing.' }, { status: 401 })
+    // 4. Validate Private Key
+    const privateKey = creds.privateKey
+    if (!privateKey || privateKey.length < 32) {
+      return NextResponse.json({ 
+        error: 'Invalid private key. Please set POLY_PRIVATE_KEY environment variable.' 
+      }, { status: 401 })
+    }
 
-    // 2. Fetch Market Data
+    // 5. Fetch Market Data
     const marketRes = await fetch(`${GAMMA_HOST}/markets/${market_id}`, { cache: 'no-store' })
-    if (!marketRes.ok) return NextResponse.json({ error: 'Market data fetch failed' }, { status: 500 })
+    if (!marketRes.ok) {
+      return NextResponse.json({ 
+        error: `Failed to fetch market data: ${marketRes.status}` 
+      }, { status: 500 })
+    }
     const market = await marketRes.json()
 
-    // 3. Token ID Selection (Strict)
+    // 6. Parse Token IDs
     let tokenIdsRaw = market.clobTokenIds
     if (typeof tokenIdsRaw === 'string') {
       try { tokenIdsRaw = JSON.parse(tokenIdsRaw) } catch { tokenIdsRaw = [] }
     }
     
     const tokenIds = Array.isArray(tokenIdsRaw) ? tokenIdsRaw : []
-    if (tokenIds.length < 2) return NextResponse.json({ error: 'Insufficient token IDs' }, { status: 400 })
+    if (tokenIds.length < 2) {
+      return NextResponse.json({ 
+        error: 'Insufficient token IDs in market data' 
+      }, { status: 400 })
+    }
 
+    // 7. Select Token ID based on side
+    // YES = index 0, NO = index 1
     const tokenIdStr = side === 'YES' ? String(tokenIds[0]) : String(tokenIds[1])
 
-    // 4. Precise Price Calculation (Essential for 400 errors)
+    // 8. Calculate Price with proper tick size
     let tickSize = parseFloat(market.minimum_tick_size ?? '0.01')
     if (isNaN(tickSize) || tickSize <= 0) tickSize = 0.01
     
-    const dec = Math.max(0, -Math.floor(Math.log10(tickSize)))
-    // Force precision to match tick size
-    let clampedPrice = parseFloat(Number(price).toFixed(dec))
+    // Round price to nearest tick size
+    const clampedPrice = Math.round(Number(price) / tickSize) * tickSize
     
-    if (clampedPrice <= 0 || clampedPrice >= 1) return NextResponse.json({ error: 'Price invalid' }, { status: 400 })
-    if (size <= 0) return NextResponse.json({ error: 'Size invalid' }, { status: 400 })
+    if (clampedPrice <= 0 || clampedPrice >= 1) {
+      return NextResponse.json({ 
+        error: `Price out of valid range: ${clampedPrice}` 
+      }, { status: 400 })
+    }
+    if (Number(size) <= 0) {
+      return NextResponse.json({ 
+        error: 'Size must be greater than 0' 
+      }, { status: 400 })
+    }
 
-    // 5. Build & Send Order
+    // 9. Map Side: YES -> BUY, NO -> SELL
+    const tradeSide: 'BUY' | 'SELL' = side === 'YES' ? 'BUY' : 'SELL'
+
+    // 10. Build Order Payload
     const payload = buildOrderPayload({
-      privateKey, 
+      privateKey,
       funderAddress: creds.funderAddress,
-      tokenId: tokenIdStr, 
-      price: clampedPrice, 
+      tokenId: tokenIdStr,
+      price: clampedPrice,
       size: Number(size),
-      side: side === 'YES' ? 'BUY' : 'SELL',
-      signatureType: creds.signatureType ?? 0, 
+      side: tradeSide,
+      signatureType: creds.signatureType,
       negRisk: Boolean(market.neg_risk),
     })
 
+    // 11. Build Authentication Headers
     const bodyStr = JSON.stringify(payload)
-    const authHdrs = await buildClobHeaders(creds, 'POST', '/order', bodyStr)
-    
+    const authHeaders = await buildClobHeaders(creds, 'POST', '/order', bodyStr)
+
+    // 12. Debug Log
+    console.log('[api/execute] Sending order to CLOB:')
+    console.log('- Token ID:', tokenIdStr)
+    console.log('- Side:', tradeSide)
+    console.log('- Price:', clampedPrice)
+    console.log('- Size:', size)
+    console.log('- Maker Amount:', payload.order.makerAmount)
+    console.log('- Taker Amount:', payload.order.takerAmount)
+
+    // 13. Send Order to CLOB
     const orderRes = await fetch(`${CLOB_HOST}/order`, {
-      method: 'POST', headers: authHdrs, body: bodyStr,
+      method: 'POST',
+      headers: authHeaders,
+      body: bodyStr,
     })
-    
+
+    // 14. Parse Response
     const orderData = await orderRes.json() as any
+    
     if (!orderRes.ok) {
-      console.error('[api/execute] CLOB Error:', orderData)
-      return NextResponse.json({ error: orderData?.error ?? 'Invalid order payload' }, { status: orderRes.status })
+      console.error('[api/execute] CLOB Error:', orderRes.status, orderData)
+      return NextResponse.json({ 
+        error: orderData?.error || orderData?.message || 'Order submission failed',
+        details: orderData 
+      }, { status: orderRes.status })
     }
 
+    // 15. Success Response
+    console.log('[api/execute] Order submitted successfully:', orderData)
+    
     return NextResponse.json({
       success: true,
       order_id: orderData?.orderID ?? orderData?.order_id ?? crypto.randomUUID(),
       token_id: tokenIdStr,
       price: clampedPrice,
-      size,
-      side,
+      size: Number(size),
+      side: tradeSide,
+      market_id,
+      maker_amount: payload.order.makerAmount,
+      taker_amount: payload.order.takerAmount,
+      builder_code: creds.builderCode || null,
     })
 
   } catch (e: unknown) {
-    console.error('[api/execute] Global Error:', e)
-    return NextResponse.json({ error: String(e) }, { status: 500 })
+    console.error('[api/execute] Unexpected Error:', e)
+    return NextResponse.json({ 
+      error: String(e) 
+    }, { status: 500 })
   }
 }
