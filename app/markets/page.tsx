@@ -11,27 +11,25 @@ import { useRealtimePrices } from '@/hooks/use-realtime-prices'
 import type { PolymarketMarket, CombinedSignal } from '@/lib/types'
 
 export default function MarketsPage() {
-  const [markets, setMarkets] = useState<PolymarketMarket[]>([])
-  const [signals, setSignals] = useState<Record<string, CombinedSignal>>({})
+  const [markets, setMarkets]       = useState<PolymarketMarket[]>([])
+  const [signals, setSignals]       = useState<Record<string, CombinedSignal>>({})
   const [analyzingId, setAnalyzingId] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [search, setSearch] = useState('')
-  const [category, setCategory] = useState('all')
-  const settings = getSettings()
+  const [loading, setLoading]       = useState(true)
+  const [error, setError]           = useState<string | null>(null)
+  const [search, setSearch]         = useState('')
+  const [category, setCategory]     = useState('all')
+
+  const settings  = getSettings()
   const portfolio = calculatePortfolioStats()
 
-  // Collect YES token IDs for real-time WebSocket subscription
-  // Validated: ensures clobTokenIds exists and has at least one ID
-  const tokenIds = useMemo(() => {
-    return markets
-      .filter(m => m.clobTokenIds?.[0])
-      .map(m => m.clobTokenIds![0])
-  }, [markets])
+  // Collect YES token IDs for WebSocket subscription
+  const tokenIds = useMemo(() =>
+    markets.filter(m => m.clobTokenIds?.[0]).map(m => m.clobTokenIds![0]),
+  [markets])
 
-  // Real-time WebSocket price updates
   const { prices: realtimePrices, connected: wsConnected } = useRealtimePrices(tokenIds)
 
+  // ── Fetch markets ─────────────────────────────────────────────────────────
   const fetchMarkets = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -41,30 +39,15 @@ export default function MarketsPage() {
       const data = await res.json()
       setMarkets(data.markets ?? [])
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Failed to load markets'
-      setError(msg)
+      setError(e instanceof Error ? e.message : 'Failed to load markets')
       console.error('[markets] error:', e)
     } finally {
       setLoading(false)
     }
   }, [])
 
-  // Auto-refresh markets + auto-analyze every 8 seconds
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      await fetchMarkets()
-      // Auto-analyze top 10 markets every cycle
-      const topMarkets = markets.slice(0, 10)
-      for (const market of topMarkets) {
-        if (!signals[market.id]) {
-          await analyzeMarket(market)
-        }
-      }
-    }, 8000)
-    return () => clearInterval(interval)
-  }, [fetchMarkets])
-
-  const analyzeMarket = async (market: PolymarketMarket) => {
+  // ── Analyze a single market ───────────────────────────────────────────────
+  const analyzeMarket = useCallback(async (market: PolymarketMarket) => {
     setAnalyzingId(market.id)
     try {
       const res = await fetch('/api/analyze', {
@@ -81,59 +64,83 @@ export default function MarketsPage() {
     } finally {
       setAnalyzingId(null)
     }
-  }
+  }, [])
 
-  const handleExecute = async (signal: CombinedSignal) => {
+  // ── Execute trade ─────────────────────────────────────────────────────────
+  const handleExecute = useCallback(async (signal: CombinedSignal) => {
     const storedCreds = getCredentials()
-    const clobCreds = storedCreds?.api_key
-      ? {
-          apiKey:        storedCreds.api_key,
-          apiSecret:     storedCreds.api_secret,
-          apiPassphrase: storedCreds.api_passphrase,
-          funderAddress: storedCreds.funder_address,
-          signatureType: storedCreds.signature_type ?? 1,
-        }
-      : undefined
+
+    if (!storedCreds?.api_key || !storedCreds?.private_key) {
+      alert('Please configure complete API credentials and private key in Settings first.')
+      return
+    }
+
+    // FIX: private_key WAJIB dikirim agar server bisa menandatangani order
+    const clobCreds = {
+      apiKey:        storedCreds.api_key,
+      apiSecret:     storedCreds.api_secret,
+      apiPassphrase: storedCreds.api_passphrase,
+      funderAddress: storedCreds.funder_address,
+      signatureType: storedCreds.signature_type ?? 1,
+      privateKey:    storedCreds.private_key,               // ← FIX KRITIS
+    }
 
     try {
       const res = await fetch('/api/trade/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          market_id: signal.market_id,
-          question: signal.question,
-          side: signal.recommendedSide,
-          size: settings.min_trade_size,
-          price: signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice,
+          market_id:         signal.market_id,
+          question:          signal.question,
+          side:              signal.recommendedSide,
+          size:              settings.min_trade_size,
+          price:             signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice,
           signal_confidence: signal.confidence,
-          ai_rationale: signal.analyses.map(a => a.rationale).join(' | '),
-          stop_loss_pct: settings.default_stop_loss,
-          take_profit_pct: settings.default_take_profit,
-          credentials: clobCreds,
+          ai_rationale:      signal.analyses.map(a => a.rationale).join(' | '),
+          stop_loss_pct:     settings.default_stop_loss,
+          take_profit_pct:   settings.default_take_profit,
+          credentials:       clobCreds,
         }),
       })
       const result = await res.json()
       if (result.success) {
         alert(`Trade executed! Order ID: ${result.order_id}`)
+        setSignals(prev => ({ ...prev, [signal.market_id]: { ...prev[signal.market_id], executed: true } }))
       } else {
         alert(`Trade failed: ${result.error}`)
       }
-    } catch (e) {
-      alert('Trade execution error')
+    } catch {
+      alert('Trade execution error. Check console.')
     }
-  }
+  }, [settings])
 
-  const categories = ['all', ...Array.from(new Set(markets.map(m => m.category).filter(Boolean) as string[]))]
+  // ── Initial load ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    fetchMarkets()
+  }, [fetchMarkets])
+
+  // FIX: Auto-refresh interval — dependencies harus mencakup markets dan signals
+  // agar tidak membentuk stale closure
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      await fetchMarkets()
+    }, 60_000) // Refresh markets setiap 60 detik (bukan 8 detik — terlalu agresif)
+    return () => clearInterval(interval)
+  }, [fetchMarkets])
+
+  const categories = ['all', ...Array.from(new Set(
+    markets.map(m => m.category).filter(Boolean) as string[]
+  ))]
 
   const filtered = markets.filter(m => {
     const matchSearch = !search || m.question.toLowerCase().includes(search.toLowerCase())
-    const matchCat = category === 'all' || m.category === category
+    const matchCat    = category === 'all' || m.category === category
     return matchSearch && matchCat
   })
 
   return (
     <div className="flex min-h-screen bg-background">
-      <AppSidebar autoTradeEnabled={settings.auto_trade_enabled} />
+      <AppSidebar autoTradeEnabled={settings.auto_trade_enabled} connected={wsConnected} />
 
       <div className="flex-1 ml-16 lg:ml-56 min-w-0 flex flex-col">
         <AppHeader
@@ -146,7 +153,6 @@ export default function MarketsPage() {
         />
 
         <main className="flex-1 p-4 space-y-4 overflow-auto">
-          {/* Error state */}
           {error && (
             <div className="flex items-center gap-2 p-3 bg-loss/10 border border-loss/20 rounded-lg text-loss text-sm">
               <AlertCircle className="w-4 h-4 shrink-0" />
@@ -155,7 +161,7 @@ export default function MarketsPage() {
             </div>
           )}
 
-          {/* Search & filter bar */}
+          {/* Search & filter */}
           <div className="flex items-center gap-3 flex-wrap">
             <div className="relative flex-1 min-w-[200px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -186,23 +192,20 @@ export default function MarketsPage() {
             </div>
           </div>
 
-          {/* Real-time connection status */}
+          {/* WebSocket status */}
           <div className={cn(
             'flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium w-fit',
             wsConnected
               ? 'bg-profit/10 text-profit border border-profit/20'
               : 'bg-secondary text-muted-foreground border border-border'
           )}>
-            {wsConnected
-              ? <Wifi className="w-3.5 h-3.5" />
-              : <WifiOff className="w-3.5 h-3.5" />}
+            {wsConnected ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
             {wsConnected ? 'Live prices connected' : 'Connecting to live prices...'}
             {wsConnected && tokenIds.length > 0 && (
               <span className="opacity-70">{tokenIds.length} tokens</span>
             )}
           </div>
 
-          {/* Count */}
           <div className="flex items-center gap-2">
             <TrendingUp className="w-4 h-4 text-primary" />
             <span className="text-sm text-muted-foreground">
@@ -223,8 +226,8 @@ export default function MarketsPage() {
           ) : (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {filtered.map(market => {
-                const yesTokenId = market.clobTokenIds?.[0]
-                const rtPrice = yesTokenId ? realtimePrices[yesTokenId] : undefined
+                const yesTokenId      = market.clobTokenIds?.[0]
+                const rtPrice         = yesTokenId ? realtimePrices[yesTokenId] : undefined
                 const realtimeYesPrice = rtPrice?.price ?? rtPrice?.bestBid
                 return (
                   <MarketCard
