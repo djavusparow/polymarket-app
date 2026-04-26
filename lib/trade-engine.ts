@@ -1,4 +1,6 @@
 // lib/trade-engine.ts
+// FIX: private_key sekarang dikirim dalam payload credentials ke /api/trade/execute.
+//      Tanpa ini, server tidak bisa menandatangani order → setiap transaksi gagal.
 
 import type {
   Trade,
@@ -9,12 +11,12 @@ import type {
   SignalDirection
 } from './types'
 
-const TRADES_KEY = 'polytrade_trades'
-const SETTINGS_KEY = 'polytrade_settings'
+const TRADES_KEY      = 'polytrade_trades'
+const SETTINGS_KEY    = 'polytrade_settings'
 const CREDENTIALS_KEY = 'polytrade_credentials'
-const PORTFOLIO_KEY = 'polytrade_portfolio'
+const PORTFOLIO_KEY   = 'polytrade_portfolio'
 
-// ─── Default Settings ───────────────────────────────────────────────────────
+// ─── Default Settings ────────────────────────────────────────────────────────
 
 export const DEFAULT_SETTINGS: TradingSettings = {
   auto_trade_enabled: false,
@@ -29,7 +31,7 @@ export const DEFAULT_SETTINGS: TradingSettings = {
   enabled_categories: [],
 }
 
-// ─── Trade Storage ────────────────────────────────────────────────────────
+// ─── Trade Storage ────────────────────────────────────────────────────────────
 
 export function getTrades(): Trade[] {
   if (typeof window === 'undefined') return []
@@ -64,7 +66,7 @@ export function getOpenTrades(): Trade[] {
   return getTrades().filter((t) => t.status === 'OPEN' || t.status === 'PENDING')
 }
 
-// ─── Settings Storage ─────────────────────────────────────────────────────
+// ─── Settings Storage ─────────────────────────────────────────────────────────
 
 export function getSettings(): TradingSettings {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS
@@ -81,7 +83,7 @@ export function saveSettings(settings: TradingSettings): void {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
 }
 
-// ─── Credentials Storage ───────────────────────────────────────────────────
+// ─── Credentials Storage ──────────────────────────────────────────────────────
 
 export function getCredentials(): AccountCredentials | null {
   if (typeof window === 'undefined') return null
@@ -103,7 +105,7 @@ export function clearCredentials(): void {
   localStorage.removeItem(CREDENTIALS_KEY)
 }
 
-// ─── Portfolio Stats Storage ───────────────────────────────────────────────
+// ─── Portfolio Stats Storage ──────────────────────────────────────────────────
 
 export function getPortfolioStats(): PortfolioStats {
   if (typeof window === 'undefined') return defaultPortfolio()
@@ -134,12 +136,9 @@ function defaultPortfolio(): PortfolioStats {
   }
 }
 
-// ─── Fixed P&L Calculation for Prediction Markets ───────────────────────
+// ─── P&L Calculation ─────────────────────────────────────────────────────────
 
-export function calculateTradePnL(trade: Trade): {
-  pnl: number
-  pnl_pct: number
-} {
+export function calculateTradePnL(trade: Trade): { pnl: number; pnl_pct: number } {
   const currentPrice = trade.current_price ?? trade.entry_price
   const shares = trade.size / trade.entry_price
   const pnl = (currentPrice - trade.entry_price) * shares
@@ -147,7 +146,7 @@ export function calculateTradePnL(trade: Trade): {
   return { pnl, pnl_pct }
 }
 
-// ─── Portfolio Stats Calculation ───────────────────────────────────────────
+// ─── Portfolio Stats Calculation ──────────────────────────────────────────────
 
 export function calculatePortfolioStats(): PortfolioStats {
   const trades = getTrades()
@@ -179,13 +178,14 @@ export function calculatePortfolioStats(): PortfolioStats {
 
   const winRate = closedTrades.length > 0 ? (winners / closedTrades.length) * 100 : 0
   const todayTrades = trades.filter((t) => t.opened_at >= todayStart).length
+  const totalSize = trades.reduce((sum, t) => sum + t.size, 0)
 
   return {
     total_balance: 0,
     available_balance: 0,
     total_value: 0,
     total_pnl: totalPnl,
-    total_pnl_pct: totalPnl > 0 ? (totalPnl / (trades.reduce((sum, t) => sum + t.size, 0) || 1)) * 100 : 0,
+    total_pnl_pct: totalSize > 0 ? (totalPnl / totalSize) * 100 : 0,
     today_pnl: todayPnl,
     today_trades: todayTrades,
     win_rate: winRate,
@@ -193,41 +193,26 @@ export function calculatePortfolioStats(): PortfolioStats {
   }
 }
 
-// ─── Credential Validation ─────────────────────────────────────────────────
+// ─── Credential Validation ────────────────────────────────────────────────────
 
-function validateCredentials(
-  creds: AccountCredentials
-): { valid: boolean; error?: string } {
+function validateCredentials(creds: AccountCredentials): { valid: boolean; error?: string } {
   if (!creds) return { valid: false, error: 'Credentials required' }
-
-  if (!creds.api_key?.trim()) {
-    return { valid: false, error: 'API key required' }
-  }
-  if (!creds.api_secret?.trim()) {
-    return { valid: false, error: 'API secret required' }
-  }
-  if (!creds.api_passphrase?.trim()) {
-    return { valid: false, error: 'API passphrase required' }
-  }
-  if (!creds.funder_address?.trim()) {
-    return { valid: false, error: 'Funder address required' }
-  }
+  if (!creds.api_key?.trim())        return { valid: false, error: 'API key required' }
+  if (!creds.api_secret?.trim())     return { valid: false, error: 'API secret required' }
+  if (!creds.api_passphrase?.trim()) return { valid: false, error: 'API passphrase required' }
+  if (!creds.funder_address?.trim()) return { valid: false, error: 'Funder address required' }
+  if (!creds.private_key?.trim())    return { valid: false, error: 'Private key required for order signing' }
   if (!creds.funder_address.match(/^0x[a-fA-F0-9]{40}$/)) {
     return { valid: false, error: 'Invalid funder address format' }
   }
-
   const sig = creds.signature_type ?? 0
   if (![0, 1, 2].includes(sig)) {
-    return {
-      valid: false,
-      error: 'Signature type must be 0 (EOA), 1 or 2',
-    }
+    return { valid: false, error: 'Signature type must be 0 (EOA), 1 (POLY_PROXY), or 2 (GNOSIS_SAFE)' }
   }
-
   return { valid: true }
 }
 
-// ─── Auto Trade Executor ─────────────────────────────────────────────────────
+// ─── Auto Trade Executor ──────────────────────────────────────────────────────
 
 export async function executeAutoTrade(
   signal: CombinedSignal,
@@ -273,41 +258,39 @@ export async function executeAutoTrade(
     return { success: false, error: credCheck.error }
   }
 
-  const stopLossPct = settings.default_stop_loss / 100
-  const takeProfitPct = settings.default_take_profit / 100
-
-  const stopLossPrice =
-    signal.recommendedSide === 'YES'
-      ? Math.max(0.01, price - price * stopLossPct)
-      : Math.min(0.99, price + price * stopLossPct)
-
-  const takeProfitPrice =
-    signal.recommendedSide === 'YES'
-      ? Math.min(0.99, price + price * takeProfitPct)
-      : Math.max(0.01, price - price * takeProfitPct)
+  const stopLossPct     = settings.default_stop_loss / 100
+  const takeProfitPct   = settings.default_take_profit / 100
+  const stopLossPrice   = signal.recommendedSide === 'YES'
+    ? Math.max(0.01, price - price * stopLossPct)
+    : Math.min(0.99, price + price * stopLossPct)
+  const takeProfitPrice = signal.recommendedSide === 'YES'
+    ? Math.min(0.99, price + price * takeProfitPct)
+    : Math.max(0.01, price - price * takeProfitPct)
 
   try {
     const res = await fetch('/api/trade/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        market_id: signal.market_id,
-        question: signal.question,
-        side: signal.recommendedSide,
-        size: tradeSize,
-        price: price,
+        market_id:         signal.market_id,
+        question:          signal.question,
+        side:              signal.recommendedSide,
+        size:              tradeSize,
+        price:             price,
         signal_confidence: signal.confidence,
-        ai_rationale: signal.analyses.map((a) => a.rationale).join(' | '),
-        stop_loss_pct: settings.default_stop_loss,
-        take_profit_pct: settings.default_take_profit,
-        stop_loss_price: stopLossPrice,
+        ai_rationale:      signal.analyses.map((a) => a.rationale).join(' | '),
+        stop_loss_pct:     settings.default_stop_loss,
+        take_profit_pct:   settings.default_take_profit,
+        stop_loss_price:   stopLossPrice,
         take_profit_price: takeProfitPrice,
         credentials: {
-          apiKey: storedCreds.api_key,
-          apiSecret: storedCreds.api_secret,
+          apiKey:        storedCreds.api_key,
+          apiSecret:     storedCreds.api_secret,
           apiPassphrase: storedCreds.api_passphrase,
           funderAddress: storedCreds.funder_address,
           signatureType: storedCreds.signature_type ?? 0,
+          // FIX KRITIS: private_key WAJIB dikirim agar server bisa menandatangani order
+          privateKey:    storedCreds.private_key,
         },
       }),
     })
@@ -315,10 +298,7 @@ export async function executeAutoTrade(
     const result = await res.json()
 
     if (!res.ok || result.error) {
-      return {
-        success: false,
-        error: result.error ?? 'Trade execution failed',
-      }
+      return { success: false, error: result.error ?? 'Trade execution failed' }
     }
 
     const expectedTokenId =
@@ -327,28 +307,27 @@ export async function executeAutoTrade(
         : result.token_ids?.[1] ?? ''
 
     const trade: Trade = {
-      id: result.trade_id ?? crypto.randomUUID(),
-      market_id: signal.market_id,
-      condition_id: result.condition_id ?? '',
-      question: signal.question,
-      side: signal.recommendedSide,
-      token_id: expectedTokenId,
-      size: tradeSize,
-      entry_price: price,
-      current_price: price,
-      stop_loss: stopLossPrice,
-      take_profit: takeProfitPrice,
-      status: 'OPEN',
+      id:               result.trade_id ?? crypto.randomUUID(),
+      market_id:        signal.market_id,
+      condition_id:     result.condition_id ?? '',
+      question:         signal.question,
+      side:             signal.recommendedSide,
+      token_id:         expectedTokenId,
+      size:             tradeSize,
+      entry_price:      price,
+      current_price:    price,
+      stop_loss:        stopLossPrice,
+      take_profit:      takeProfitPrice,
+      status:           'OPEN',
       signal_confidence: signal.confidence,
-      ai_rationale: signal.analyses
-        .map((a) => `[${a.model}] ${a.rationale}`)
-        .join('\n'),
-      order_id: result.order_id,
-      opened_at: Date.now(),
+      ai_rationale:     signal.analyses.map((a) => `[${a.model}] ${a.rationale}`).join('\n'),
+      order_id:         result.order_id,
+      opened_at:        Date.now(),
     }
 
     addTrade(trade)
     return { success: true, trade }
+
   } catch (e: unknown) {
     const errorMessage = e instanceof Error ? e.message : 'Network error'
     if (retryCount < 1 && errorMessage.toLowerCase().includes('network')) {
@@ -359,38 +338,36 @@ export async function executeAutoTrade(
   }
 }
 
-export function updateTradeWithPrice(
-  tradeId: string,
-  newPrice: number
-): void {
+// ─── Update Trade Price & Auto Close on SL/TP ────────────────────────────────
+
+export function updateTradeWithPrice(tradeId: string, newPrice: number): void {
   const trades = getTrades()
   const idx = trades.findIndex((t) => t.id === tradeId)
   if (idx === -1) return
 
   const trade = trades[idx]
-  const stopLoss = trade.stop_loss ?? (trade.side === 'YES' ? 0 : 1)
-  const takeProfit = trade.take_profit ?? (trade.side === 'YES' ? 1 : 0)
+  const stopLoss   = trade.stop_loss   ?? (trade.side === 'YES' ? 0   : 1)
+  const takeProfit = trade.take_profit ?? (trade.side === 'YES' ? 1   : 0)
 
-  const shares = trade.size / trade.entry_price
-  const pnl = (newPrice - trade.entry_price) * shares
+  const shares  = trade.size / trade.entry_price
+  const pnl     = (newPrice - trade.entry_price) * shares
   const pnl_pct = ((newPrice - trade.entry_price) / trade.entry_price) * 100
 
   let newStatus = trade.status
-
   if (
     (trade.side === 'YES' && newPrice <= stopLoss) ||
-    (trade.side === 'NO' && newPrice >= stopLoss)
+    (trade.side === 'NO'  && newPrice >= stopLoss)
   ) {
     newStatus = 'STOP_LOSS'
   } else if (
     (trade.side === 'YES' && newPrice >= takeProfit) ||
-    (trade.side === 'NO' && newPrice <= takeProfit)
+    (trade.side === 'NO'  && newPrice <= takeProfit)
   ) {
     newStatus = 'TAKE_PROFIT'
   }
 
   const isClosed = ['STOP_LOSS', 'TAKE_PROFIT', 'CLOSED'].includes(newStatus)
-  
+
   trades[idx] = {
     ...trade,
     current_price: newPrice,
@@ -399,7 +376,7 @@ export function updateTradeWithPrice(
     status: newStatus,
     ...(isClosed && {
       exit_price: newPrice,
-      closed_at: Date.now(),
+      closed_at:  Date.now(),
     }),
   }
 
