@@ -1,7 +1,10 @@
 'use client'
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { BrainCircuit, TrendingUp, TrendingDown, Activity, Filter, Loader2, RefreshCw, AlertCircle } from 'lucide-react'
+import {
+  BrainCircuit, TrendingUp, TrendingDown, Activity,
+  Filter, Loader2, RefreshCw, AlertCircle,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { AppSidebar } from '@/components/app-sidebar'
 import { AppHeader } from '@/components/app-header'
@@ -15,52 +18,36 @@ interface AnalyzeResponse {
   error?: string
 }
 
+const RATE_LIMIT_DELAY = 500
+
 export default function SignalsPage() {
-  // --- State ---
-  const [markets, setMarkets] = useState<PolymarketMarket[]>([])
-  const [signals, setSignals] = useState<CombinedSignal[]>([])
-  const [scanning, setScanning] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [filter, setFilter] = useState<FilterType>('all')
-  const [selected, setSelected] = useState<CombinedSignal | null>(null)
-  const [executingIds, setExecutingIds] = useState<Set<string>>(new Set()) // Track multiple executing IDs
-  const [retryCount, setRetryCount] = useState(0)
-  const [lastError, setLastError] = useState<string | null>(null)
-  
-  // Track individual market analysis status
+  const [markets, setMarkets]         = useState<PolymarketMarket[]>([])
+  const [signals, setSignals]         = useState<CombinedSignal[]>([])
+  const [scanning, setScanning]       = useState(false)
+  const [progress, setProgress]       = useState(0)
+  const [filter, setFilter]           = useState<FilterType>('all')
+  const [selected, setSelected]       = useState<CombinedSignal | null>(null)
+  const [executingIds, setExecutingIds] = useState<Set<string>>(new Set())
+  const [retryCount, setRetryCount]   = useState(0)
+  const [lastError, setLastError]     = useState<string | null>(null)
   const [analyzingMarkets, setAnalyzingMarkets] = useState<Set<string>>(new Set())
 
-  const settings = getSettings()
+  const settings  = getSettings()
   const portfolio = calculatePortfolioStats()
-  
-  // Ref untuk mencegah double execution di loop auto-trade
+
+  // Prevent double-execution per session
   const executedThisSession = useRef<Set<string>>(new Set())
 
-  // --- Helper Functions ---
-
-  // Rate limiting delay: 500ms
-  const RATE_LIMIT_DELAY = 500
-
-  const validateSignatureType = (type: number): boolean => {
-    return [0, 1, 2].includes(type)
-  }
-
-  // Calculate trade size based on confidence (same as trade-engine)
   const calcTradeSize = (sig: CombinedSignal): number => {
     const mult = Math.min(sig.confidence / 100, 1)
-    return Math.round(
-      settings.min_trade_size +
-        (settings.max_trade_size - settings.min_trade_size) * mult
-    )
+    return Math.round(settings.min_trade_size + (settings.max_trade_size - settings.min_trade_size) * mult)
   }
 
-  // --- Core Logic ---
-
-  // Analyze with Retry (Handles 425 Engine Restart)
+  // ── Analyze with retry (handles 425 Engine Restart) ───────────────────────
   const analyzeWithRetry = useCallback(async (market: PolymarketMarket): Promise<AnalyzeResponse | null> => {
     const MAX_RETRIES = 10
     let delay = 1000
-    
+
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
         const response = await fetch('/api/analyze', {
@@ -68,44 +55,35 @@ export default function SignalsPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ market }),
         })
-        
+
         if (response.status === 425) {
-          console.log(`Engine restarting, retrying in ${delay/1000}s... (Attempt ${attempt + 1})`)
           await new Promise(r => setTimeout(r, delay))
-          delay = Math.min(delay * 2, 30000)
+          delay = Math.min(delay * 2, 30_000)
           continue
         }
-        
-        if (!response.ok) {
-          console.warn(`API Error: ${response.status}`)
-          return null
-        }
-        
+        if (!response.ok) return null
         return await response.json()
-      } catch (error) {
-        console.warn(`Network error during analysis:`, error)
+      } catch {
         await new Promise(r => setTimeout(r, delay))
       }
     }
-    
-    console.error('Engine restart exceeded maximum retry attempts')
     return null
   }, [])
 
+  // ── Scan all markets ──────────────────────────────────────────────────────
   const fetchAndScan = useCallback(async () => {
     setScanning(true)
     setProgress(0)
     setSignals([])
     setAnalyzingMarkets(new Set())
     setLastError(null)
-    executedThisSession.current.clear() // Reset executed tracker on new scan
+    executedThisSession.current.clear()
 
     try {
       const res = await fetch('/api/markets?type=top&limit=15')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      
       const { markets: mData } = await res.json()
-      const validMarkets = mData ?? []
+      const validMarkets: PolymarketMarket[] = mData ?? []
       setMarkets(validMarkets)
 
       for (let i = 0; i < validMarkets.length; i++) {
@@ -114,7 +92,6 @@ export default function SignalsPage() {
         setAnalyzingMarkets(prev => new Set([...prev, market.id]))
 
         const result = await analyzeWithRetry(market)
-        
         if (result?.signal) {
           setSignals(prev => [...prev, result.signal!].sort((a, b) => b.confidence - a.confidence))
         }
@@ -127,56 +104,55 @@ export default function SignalsPage() {
 
         await new Promise(r => setTimeout(r, RATE_LIMIT_DELAY))
       }
-      
+
       setRetryCount(0)
     } catch (error: unknown) {
-      const errorMsg = error instanceof Error ? error.message : 'Unknown error'
-      setLastError(errorMsg)
-      console.error('Failed to fetch markets:', errorMsg)
+      const msg = error instanceof Error ? error.message : 'Unknown error'
+      setLastError(msg)
+      console.error('[signals] fetchAndScan error:', msg)
     } finally {
       setScanning(false)
     }
   }, [analyzeWithRetry])
 
   const handleRetry = useCallback(() => {
-    const delay = Math.min(1000 * Math.pow(2, retryCount), 30000)
-    console.log(`Retrying in ${delay}ms... (Attempt ${retryCount + 1})`)
+    const delay = Math.min(1000 * Math.pow(2, retryCount), 30_000)
     setTimeout(() => {
       setRetryCount(prev => prev + 1)
       fetchAndScan()
     }, delay)
   }, [retryCount, fetchAndScan])
 
-  // --- Auto Trade Execution ---
-
+  // ── Execute signal ────────────────────────────────────────────────────────
   const executeSignal = useCallback(async (signal: CombinedSignal) => {
-    // Prevent double execution
     if (executedThisSession.current.has(signal.market_id)) return
     executedThisSession.current.add(signal.market_id)
-
     setExecutingIds(prev => new Set(prev).add(signal.market_id))
 
-    // Get credentials
     const storedCreds = getCredentials()
-    
+
     if (!storedCreds?.api_key || !storedCreds?.api_secret || !storedCreds?.funder_address) {
-      alert('Please configure complete API credentials in Settings first')
+      alert('Please configure complete API credentials in Settings first.')
       setExecutingIds(prev => { const next = new Set(prev); next.delete(signal.market_id); return next })
+      executedThisSession.current.delete(signal.market_id)
       return
     }
 
-    if (!validateSignatureType(storedCreds.signature_type ?? 1)) {
-       alert('Invalid signature type configured. Please check Settings.')
-       setExecutingIds(prev => { const next = new Set(prev); next.delete(signal.market_id); return next })
-       return
+    // FIX: private_key WAJIB dikirim — tanpa ini order tidak bisa ditandatangani
+    if (!storedCreds.private_key) {
+      alert('Private key not configured. Please add your wallet private key in Settings.')
+      setExecutingIds(prev => { const next = new Set(prev); next.delete(signal.market_id); return next })
+      executedThisSession.current.delete(signal.market_id)
+      return
     }
 
     const clobCreds = {
-      apiKey: storedCreds.api_key,
-      apiSecret: storedCreds.api_secret,
+      apiKey:        storedCreds.api_key,
+      apiSecret:     storedCreds.api_secret,
       apiPassphrase: storedCreds.api_passphrase,
       funderAddress: storedCreds.funder_address,
       signatureType: storedCreds.signature_type ?? 1,
+      privateKey:    storedCreds.private_key,               // ← FIX KRITIS
     }
 
     try {
@@ -184,74 +160,63 @@ export default function SignalsPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          market_id: signal.market_id,
-          question: signal.question,
-          side: signal.recommendedSide,
-          size: calcTradeSize(signal),
-          price: signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice,
+          market_id:         signal.market_id,
+          question:          signal.question,
+          side:              signal.recommendedSide,
+          size:              calcTradeSize(signal),
+          price:             signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice,
           signal_confidence: signal.confidence,
-          ai_rationale: signal.analyses.map(a => a.rationale).join(' | '),
-          stop_loss_pct: settings.default_stop_loss,
-          take_profit_pct: settings.default_take_profit,
-          credentials: clobCreds,
+          ai_rationale:      signal.analyses.map(a => a.rationale).join(' | '),
+          stop_loss_pct:     settings.default_stop_loss,
+          take_profit_pct:   settings.default_take_profit,
+          credentials:       clobCreds,
         }),
       })
-      
       const result = await res.json()
-      
+
       if (result.success) {
-        // Store trade locally
+        const price = signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice
         addTrade({
-          id: result.trade_id,
-          market_id: signal.market_id,
-          condition_id: result.condition_id ?? '',
-          question: signal.question,
-          side: signal.recommendedSide,
-          token_id: result.token_id ?? '',
-          size: calcTradeSize(signal), // Use calculated size here too for consistency
-          entry_price: signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice,
-          current_price: signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice,
-          stop_loss: (signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice) * (1 - settings.default_stop_loss / 100),
-          take_profit: Math.min((signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice) * (1 + settings.default_take_profit / 100), 0.99),
-          status: 'OPEN',
+          id:                result.trade_id ?? crypto.randomUUID(),
+          market_id:         signal.market_id,
+          condition_id:      result.condition_id ?? '',
+          question:          signal.question,
+          side:              signal.recommendedSide,
+          token_id:          result.token_id ?? '',
+          size:              calcTradeSize(signal),
+          entry_price:       price,
+          current_price:     price,
+          stop_loss:         Math.max(0.01, price * (1 - settings.default_stop_loss / 100)),
+          take_profit:       Math.min(0.99, price * (1 + settings.default_take_profit / 100)),
+          status:            'OPEN',
           signal_confidence: signal.confidence,
-          ai_rationale: signal.analyses.map(a => `[${a.model}] ${a.rationale}`).join('\n'),
-          order_id: result.order_id,
-          opened_at: Date.now(),
+          ai_rationale:      signal.analyses.map(a => `[${a.model}] ${a.rationale}`).join('\n'),
+          order_id:          result.order_id,
+          opened_at:         Date.now(),
         })
-        
-        // Update UI state
         setSignals(prev => prev.map(s => s.market_id === signal.market_id ? { ...s, executed: true } : s))
       } else {
-        console.error('Trade execution failed:', result.error)
-        // If failed, remove from executedThisSession so it can be retried
+        console.error('[signals] trade failed:', result.error)
         executedThisSession.current.delete(signal.market_id)
       }
     } catch (e) {
-      console.error('Execution error:', e)
+      console.error('[signals] execution error:', e)
       executedThisSession.current.delete(signal.market_id)
     } finally {
       setExecutingIds(prev => { const next = new Set(prev); next.delete(signal.market_id); return next })
     }
-  }, [settings])
+  }, [settings, calcTradeSize])
 
-  // --- Auto-Trade Watcher (Loop) ---
+  // ── Auto-trade watcher ────────────────────────────────────────────────────
   useEffect(() => {
     if (!settings.auto_trade_enabled) return
-
-    // Loop through current signals
     signals.forEach(sig => {
-      const highConfidence = sig.confidence >= settings.min_confidence
-      const canTrade = sig.direction !== 'HOLD' && highConfidence && !sig.executed
-
-      if (canTrade) {
-        console.log(`Auto-triggering trade for ${sig.market_id}`)
-        executeSignal(sig)
-      }
+      const canTrade = sig.confidence >= settings.min_confidence && sig.direction !== 'HOLD' && !sig.executed
+      if (canTrade) executeSignal(sig)
     })
   }, [signals, settings.auto_trade_enabled, settings.min_confidence, executeSignal])
 
-  // --- Initial Fetch ---
+  // ── Initial scan ──────────────────────────────────────────────────────────
   useEffect(() => {
     fetchAndScan()
     return () => {
@@ -260,15 +225,12 @@ export default function SignalsPage() {
     }
   }, [fetchAndScan])
 
-  // --- Memoized Filtered Signals ---
-  const filtered = useMemo(() => {
-    return signals.filter(s => {
-      if (filter === 'high') return s.confidence >= 75
-      if (filter === 'buy') return s.direction === 'BUY'
-      if (filter === 'sell') return s.direction === 'SELL'
-      return true
-    })
-  }, [signals, filter])
+  const filtered = useMemo(() => signals.filter(s => {
+    if (filter === 'high') return s.confidence >= 75
+    if (filter === 'buy')  return s.direction === 'BUY'
+    if (filter === 'sell') return s.direction === 'SELL'
+    return true
+  }), [signals, filter])
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -285,44 +247,38 @@ export default function SignalsPage() {
         />
 
         <main className="flex-1 p-4 space-y-4 overflow-auto">
-          {/* Scan progress */}
           {scanning && (
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <BrainCircuit className="w-4 h-4 text-primary animate-pulse" />
-                <span className="text-sm text-foreground">Analyzing {markets.length} markets with 3 AI models...</span>
+                <span className="text-sm text-foreground">Analyzing {markets.length} markets with AI models...</span>
                 <span className="ml-auto font-mono text-primary text-sm">{progress}%</span>
               </div>
               <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-primary rounded-full transition-all duration-300"
-                  style={{ width: `${progress}%` }}
-                />
+                <div className="h-full bg-primary rounded-full transition-all duration-300" style={{ width: `${progress}%` }} />
               </div>
             </div>
           )}
 
-          {/* Error / Retry State */}
           {lastError && !scanning && (
-             <div className="p-4 bg-loss/10 border border-loss/20 rounded-lg flex items-center justify-between">
-               <div className="flex items-center gap-2 text-loss text-sm">
-                 <AlertCircle className="w-4 h-4" />
-                 <span>{lastError}</span>
-               </div>
-               <button onClick={handleRetry} className="flex items-center gap-1 px-3 py-1 bg-secondary border border-border rounded text-xs hover:bg-primary/10 transition">
-                 <RefreshCw className="w-3 h-3" /> Retry ({retryCount})
-               </button>
-             </div>
+            <div className="p-4 bg-loss/10 border border-loss/20 rounded-lg flex items-center justify-between">
+              <div className="flex items-center gap-2 text-loss text-sm">
+                <AlertCircle className="w-4 h-4" />
+                <span>{lastError}</span>
+              </div>
+              <button onClick={handleRetry} className="flex items-center gap-1 px-3 py-1 bg-secondary border border-border rounded text-xs hover:bg-primary/10 transition">
+                <RefreshCw className="w-3 h-3" /> Retry ({retryCount})
+              </button>
+            </div>
           )}
 
-          {/* Signal summary */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {[
-              { label: 'Total Signals', value: signals.length, color: 'text-foreground', bg: '' },
-              { label: 'High Confidence (75%+)', value: signals.filter(s => s.confidence >= 75).length, color: 'text-profit', bg: 'bg-profit/5 border-profit/20' },
-              { label: 'BUY Signals', value: signals.filter(s => s.direction === 'BUY').length, color: 'text-profit', bg: '' },
-              { label: 'SELL Signals', value: signals.filter(s => s.direction === 'SELL').length, color: 'text-loss', bg: '' },
-            ].map((stat) => (
+              { label: 'Total Signals',           value: signals.length,                                    color: 'text-foreground', bg: '' },
+              { label: 'High Confidence (75%+)',  value: signals.filter(s => s.confidence >= 75).length,    color: 'text-profit',     bg: 'bg-profit/5 border-profit/20' },
+              { label: 'BUY Signals',             value: signals.filter(s => s.direction === 'BUY').length, color: 'text-profit',     bg: '' },
+              { label: 'SELL Signals',            value: signals.filter(s => s.direction === 'SELL').length,color: 'text-loss',       bg: '' },
+            ].map(stat => (
               <div key={stat.label} className={cn('bg-card border border-border rounded-lg p-3', stat.bg)}>
                 <p className="text-xs text-muted-foreground mb-1">{stat.label}</p>
                 <p className={cn('text-2xl font-mono font-bold', stat.color)}>{stat.value}</p>
@@ -330,7 +286,6 @@ export default function SignalsPage() {
             ))}
           </div>
 
-          {/* Filters */}
           <div className="flex items-center gap-2">
             <Filter className="w-4 h-4 text-muted-foreground" />
             {(['all', 'high', 'buy', 'sell'] as FilterType[]).map(f => (
@@ -339,9 +294,7 @@ export default function SignalsPage() {
                 onClick={() => setFilter(f)}
                 className={cn(
                   'px-3 h-8 rounded-md text-xs font-medium transition-all',
-                  filter === f
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-secondary border border-border text-muted-foreground hover:text-foreground'
+                  filter === f ? 'bg-primary text-primary-foreground' : 'bg-secondary border border-border text-muted-foreground hover:text-foreground'
                 )}
               >
                 {f === 'all' ? 'All' : f === 'high' ? 'High Confidence' : f.toUpperCase()}
@@ -349,9 +302,7 @@ export default function SignalsPage() {
             ))}
           </div>
 
-          {/* Signals grid + detail */}
           <div className="grid lg:grid-cols-3 gap-4">
-            {/* Signal list */}
             <div className="lg:col-span-2 space-y-2">
               {filtered.map(signal => (
                 <SignalCard
@@ -369,17 +320,19 @@ export default function SignalsPage() {
                 <div className="py-12 text-center border border-dashed border-border rounded-lg">
                   <BrainCircuit className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
                   <p className="text-sm text-foreground mb-1">No signals found</p>
-                  <button onClick={fetchAndScan} className="text-xs text-primary hover:underline">
-                    Run AI scan
-                  </button>
+                  <button onClick={fetchAndScan} className="text-xs text-primary hover:underline">Run AI scan</button>
                 </div>
               )}
             </div>
 
-            {/* Detail panel */}
             <div>
               {selected ? (
-                <SignalDetail signal={selected} settings={settings} onExecute={() => executeSignal(selected)} executing={executingIds.has(selected.market_id)} />
+                <SignalDetail
+                  signal={selected}
+                  settings={settings}
+                  onExecute={() => executeSignal(selected)}
+                  executing={executingIds.has(selected.market_id)}
+                />
               ) : (
                 <div className="bg-card border border-border rounded-lg p-6 text-center">
                   <BrainCircuit className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
@@ -395,26 +348,12 @@ export default function SignalsPage() {
 }
 
 // ─── Signal Card ──────────────────────────────────────────────────────────────
-function SignalCard({
-  signal,
-  selected,
-  isAnalyzing,
-  onSelect,
-  onExecute,
-  executing,
-  settings,
-}: {
-  signal: CombinedSignal
-  selected: boolean
-  isAnalyzing: boolean
-  onSelect: () => void
-  onExecute: () => void
-  executing: boolean
-  settings: TradingSettings
+function SignalCard({ signal, selected, isAnalyzing, onSelect, onExecute, executing, settings }: {
+  signal: CombinedSignal; selected: boolean; isAnalyzing: boolean
+  onSelect: () => void; onExecute: () => void; executing: boolean; settings: TradingSettings
 }) {
-  const isHigh = signal.confidence >= settings.min_confidence
+  const isHigh       = signal.confidence >= settings.min_confidence
   const isExecutable = isHigh && signal.direction !== 'HOLD'
-
   return (
     <div
       onClick={onSelect}
@@ -426,30 +365,19 @@ function SignalCard({
       )}
     >
       <div className="flex items-start gap-3">
-        {/* Direction icon / Analyzing loader */}
         <div className={cn(
           'mt-0.5 w-7 h-7 rounded flex items-center justify-center shrink-0',
-          signal.direction === 'BUY' ? 'bg-profit/15' :
-          signal.direction === 'SELL' ? 'bg-loss/15' : 'bg-secondary'
+          signal.direction === 'BUY' ? 'bg-profit/15' : signal.direction === 'SELL' ? 'bg-loss/15' : 'bg-secondary'
         )}>
-          {isAnalyzing ? (
-            <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
-          ) : signal.direction === 'BUY' ? (
-            <TrendingUp className="w-4 h-4 text-profit" />
-          ) : signal.direction === 'SELL' ? (
-            <TrendingDown className="w-4 h-4 text-loss" />
-          ) : (
-            <Activity className="w-4 h-4 text-muted-foreground" />
-          )}
+          {isAnalyzing ? <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+            : signal.direction === 'BUY' ? <TrendingUp className="w-4 h-4 text-profit" />
+            : signal.direction === 'SELL' ? <TrendingDown className="w-4 h-4 text-loss" />
+            : <Activity className="w-4 h-4 text-muted-foreground" />}
         </div>
-
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-foreground leading-snug line-clamp-2">{signal.question}</p>
           <div className="flex items-center flex-wrap gap-2 mt-1.5">
-            <span className={cn(
-              'text-xs font-semibold',
-              signal.direction === 'BUY' ? 'text-profit' : signal.direction === 'SELL' ? 'text-loss' : 'text-muted-foreground'
-            )}>
+            <span className={cn('text-xs font-semibold', signal.direction === 'BUY' ? 'text-profit' : signal.direction === 'SELL' ? 'text-loss' : 'text-muted-foreground')}>
               {signal.direction} {signal.recommendedSide}
             </span>
             <span className="text-xs text-muted-foreground font-mono">
@@ -458,30 +386,22 @@ function SignalCard({
             <span className="text-xs text-muted-foreground">{signal.analyses.length} AI models</span>
           </div>
         </div>
-
         <div className="shrink-0 text-right">
-          <p className={cn(
-            'text-lg font-mono font-bold',
-            signal.confidence >= 80 ? 'text-profit' :
-            signal.confidence >= 65 ? 'text-chart-4' : 'text-muted-foreground'
+          <p className={cn('text-lg font-mono font-bold',
+            signal.confidence >= 80 ? 'text-profit' : signal.confidence >= 65 ? 'text-chart-4' : 'text-muted-foreground'
           )}>{signal.confidence}%</p>
           {isExecutable && !signal.executed && (
             <button
               onClick={e => { e.stopPropagation(); onExecute() }}
               disabled={executing}
-              className={cn(
-                'mt-1 px-2 py-1 rounded text-xs font-semibold transition-all disabled:opacity-50',
-                signal.direction === 'BUY'
-                  ? 'bg-profit/15 text-profit hover:bg-profit/25'
-                  : 'bg-loss/15 text-loss hover:bg-loss/25'
+              className={cn('mt-1 px-2 py-1 rounded text-xs font-semibold transition-all disabled:opacity-50',
+                signal.direction === 'BUY' ? 'bg-profit/15 text-profit hover:bg-profit/25' : 'bg-loss/15 text-loss hover:bg-loss/25'
               )}
             >
               {executing ? '...' : 'Execute'}
             </button>
           )}
-          {signal.executed && (
-            <span className="text-xs text-profit font-medium">Executed</span>
-          )}
+          {signal.executed && <span className="text-xs text-profit font-medium">Executed</span>}
         </div>
       </div>
     </div>
@@ -490,24 +410,17 @@ function SignalCard({
 
 // ─── Signal Detail ────────────────────────────────────────────────────────────
 function SignalDetail({ signal, settings, onExecute, executing }: {
-  signal: CombinedSignal
-  settings: TradingSettings
-  onExecute: () => void
-  executing: boolean
+  signal: CombinedSignal; settings: TradingSettings; onExecute: () => void; executing: boolean
 }) {
   return (
     <div className="bg-card border border-primary/20 rounded-lg overflow-hidden sticky top-4">
-      <div className={cn(
-        'h-1',
-        signal.direction === 'BUY' ? 'bg-profit' : signal.direction === 'SELL' ? 'bg-loss' : 'bg-muted'
-      )} />
+      <div className={cn('h-1', signal.direction === 'BUY' ? 'bg-profit' : signal.direction === 'SELL' ? 'bg-loss' : 'bg-muted')} />
       <div className="p-4 space-y-4">
         <div>
           <p className="text-xs text-muted-foreground mb-1">Market Question</p>
           <p className="text-sm font-medium text-foreground leading-relaxed">{signal.question}</p>
         </div>
 
-        {/* Confidence meter */}
         <div>
           <div className="flex justify-between text-xs mb-1.5">
             <span className="text-muted-foreground">Ensemble Confidence</span>
@@ -521,33 +434,20 @@ function SignalDetail({ signal, settings, onExecute, executing }: {
               style={{ width: `${signal.confidence}%` }}
             />
           </div>
-          <div className="flex justify-between text-xs mt-1 text-muted-foreground">
-            <span>0%</span>
-            <span className="text-loss">75% threshold</span>
-            <span>100%</span>
-          </div>
         </div>
 
-        {/* Prices */}
         <div className="grid grid-cols-2 gap-2">
           <PriceBox label="YES Price" value={`${(signal.yesPrice * 100).toFixed(1)}¢`} color="profit" />
-          <PriceBox label="NO Price" value={`${(signal.noPrice * 100).toFixed(1)}¢`} color="loss" />
+          <PriceBox label="NO Price"  value={`${(signal.noPrice  * 100).toFixed(1)}¢`} color="loss"   />
         </div>
 
-        {/* Recommendation */}
-        <div className={cn(
-          'p-3 rounded-lg',
-          signal.direction === 'BUY' ? 'bg-profit/10' : 'bg-loss/10'
-        )}>
+        <div className={cn('p-3 rounded-lg', signal.direction === 'BUY' ? 'bg-profit/10' : 'bg-loss/10')}>
           <p className="text-xs text-muted-foreground mb-0.5">AI Recommendation</p>
-          <p className={cn('text-base font-bold',
-            signal.direction === 'BUY' ? 'text-profit' : 'text-loss'
-          )}>
+          <p className={cn('text-base font-bold', signal.direction === 'BUY' ? 'text-profit' : 'text-loss')}>
             {signal.direction === 'BUY' ? 'BUY' : 'SELL'} {signal.recommendedSide} tokens
           </p>
         </div>
 
-        {/* AI Analyses */}
         <div className="space-y-2">
           <p className="text-xs font-medium text-muted-foreground">AI Model Analyses</p>
           {signal.analyses.map((a, i) => (
@@ -555,10 +455,9 @@ function SignalDetail({ signal, settings, onExecute, executing }: {
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs font-mono text-primary font-semibold">{a.model}</span>
                 <div className="flex items-center gap-1.5">
-                  <span className={cn(
-                    'text-xs font-semibold',
-                    a.signal === 'BUY' ? 'text-profit' : a.signal === 'SELL' ? 'text-loss' : 'text-muted-foreground'
-                  )}>{a.signal}</span>
+                  <span className={cn('text-xs font-semibold', a.signal === 'BUY' ? 'text-profit' : a.signal === 'SELL' ? 'text-loss' : 'text-muted-foreground')}>
+                    {a.signal}
+                  </span>
                   <span className="text-xs text-muted-foreground">{a.confidence}%</span>
                 </div>
               </div>
@@ -567,16 +466,12 @@ function SignalDetail({ signal, settings, onExecute, executing }: {
           ))}
         </div>
 
-        {/* Execute button */}
         {signal.confidence >= settings.min_confidence && signal.direction !== 'HOLD' && !signal.executed && (
           <button
             onClick={onExecute}
             disabled={executing}
-            className={cn(
-              'w-full h-10 rounded-lg text-sm font-bold transition-all disabled:opacity-50',
-              signal.direction === 'BUY'
-                ? 'bg-profit text-foreground hover:bg-profit/90'
-                : 'bg-loss text-foreground hover:bg-loss/90'
+            className={cn('w-full h-10 rounded-lg text-sm font-bold transition-all disabled:opacity-50',
+              signal.direction === 'BUY' ? 'bg-profit text-foreground hover:bg-profit/90' : 'bg-loss text-foreground hover:bg-loss/90'
             )}
           >
             {executing ? 'Executing...' : `Execute ${signal.direction} — $${settings.min_trade_size} USDC`}
@@ -594,10 +489,7 @@ function SignalDetail({ signal, settings, onExecute, executing }: {
 
 function PriceBox({ label, value, color }: { label: string; value: string; color: 'profit' | 'loss' }) {
   return (
-    <div className={cn(
-      'rounded p-2 text-center border',
-      color === 'profit' ? 'bg-profit/5 border-profit/15' : 'bg-loss/5 border-loss/15'
-    )}>
+    <div className={cn('rounded p-2 text-center border', color === 'profit' ? 'bg-profit/5 border-profit/15' : 'bg-loss/5 border-loss/15')}>
       <p className="text-xs text-muted-foreground mb-0.5">{label}</p>
       <p className={cn('text-lg font-mono font-bold', color === 'profit' ? 'text-profit' : 'text-loss')}>{value}</p>
     </div>
