@@ -7,30 +7,28 @@ import { cn } from '@/lib/utils'
 import { AppSidebar } from '@/components/app-sidebar'
 import { AppHeader } from '@/components/app-header'
 import { PortfolioStatsBar } from '@/components/portfolio-stats'
-import { getSettings, saveSettings, calculatePortfolioStats, getOpenTrades, getTrades, getCredentials } from '@/lib/trade-engine'
+import {
+  getSettings, saveSettings, calculatePortfolioStats,
+  getOpenTrades, getTrades, getCredentials,
+} from '@/lib/trade-engine'
 import { useRealtimePrices } from '@/hooks/use-realtime-prices'
 import type { PolymarketMarket, CombinedSignal, TradingSettings, PortfolioStats } from '@/lib/types'
 
 export default function DashboardPage() {
-  const [markets, setMarkets] = useState<PolymarketMarket[]>([])
-  const [signals, setSignals] = useState<CombinedSignal[]>([])
-  const [settings, setSettings] = useState<TradingSettings>(getSettings())
+  const [markets, setMarkets]     = useState<PolymarketMarket[]>([])
+  const [signals, setSignals]     = useState<CombinedSignal[]>([])
+  const [settings, setSettings]   = useState<TradingSettings>(getSettings())
   const [portfolio, setPortfolio] = useState<PortfolioStats>(calculatePortfolioStats())
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading]     = useState(false)
   const [scanProgress, setScanProgress] = useState(0)
-  const [scanning, setScanning] = useState(false)
+  const [scanning, setScanning]   = useState(false)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
   const [notifications, setNotifications] = useState<string[]>([])
-  
-  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const autoScanInterval = useRef<NodeJS.Timeout | null>(null)
 
-  // --- WebSocket Setup (Manual Implementation) ---
-  const wsRef = useRef<WebSocket | null>(null)
-  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const [wsConnected, setWsConnected] = useState(false)
+  const heartbeatRef    = useRef<ReturnType<typeof setInterval> | null>(null)
+  const autoScanRef     = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Collect all YES/NO token IDs from loaded markets
+  // ── Collect all YES/NO token IDs ──────────────────────────────────────────
   const tokenIds = useMemo(() => {
     const ids: string[] = []
     for (const m of markets) {
@@ -40,99 +38,11 @@ export default function DashboardPage() {
     return ids
   }, [markets])
 
-  // Hook untuk real-time prices (fallback atau layer tambahan)
-  const { prices: realtimePrices } = useRealtimePrices(tokenIds)
+  // FIX: Gunakan satu hook useRealtimePrices — hapus implementasi WebSocket manual
+  // yang duplikat di page.tsx (duplikasi ini menyebabkan dua koneksi WSS sekaligus)
+  const { prices: realtimePrices, connected: wsConnected } = useRealtimePrices(tokenIds)
 
-  const connectWebSocket = useCallback(() => {
-    // Pastikan tokenIds ada dan tidak kosong sebelum connect
-    if (tokenIds.length === 0) return
-
-    const wsUrl = `wss://ws-subscriptions-clob.polymarket.com/ws/market`
-    
-    // Close existing connection if any
-    if (wsRef.current) {
-      wsRef.current.close()
-    }
-
-    const ws = new WebSocket(wsUrl)
-    wsRef.current = ws
-
-    ws.onopen = () => {
-      console.log('WebSocket connected manually')
-      setWsConnected(true)
-      
-      // Subscribe message sesuai dokumentasi Polymarket
-      const subscribeMsg = {
-        type: "market",
-        assets_ids: tokenIds, // Langsung array token IDs
-        custom_feature_enabled: true // Untuk best_bid_ask events
-      }
-      ws.send(JSON.stringify(subscribeMsg))
-
-      // Setup client PING interval (10 detik) untuk keep-alive
-      // Dokumentasi: client harus mengirim PING setiap 10 detik
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current)
-      pingIntervalRef.current = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send('PING')
-        }
-      }, 10000)
-    }
-
-    ws.onmessage = (event) => {
-      // Handle PING dari server (server mengirim 'ping')
-      if (event.data === 'ping') {
-        ws.send('pong')
-        return
-      }
-
-      // Handle JSON messages (price updates, etc.)
-      try {
-        const data = JSON.parse(event.data)
-        console.log('WS Message:', data)
-        // Di sini Anda bisa menangani data harga yang diterima
-        // Misalnya, update state realtimePrices jika diperlukan
-      } catch (e) {
-        console.error('Error parsing WS message:', e)
-      }
-    }
-
-    ws.onclose = () => {
-      console.log('WebSocket disconnected')
-      setWsConnected(false)
-      // Hapus ping interval saat disconnect
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current)
-      // Reconnect logic: Retry after 1 second
-      setTimeout(() => connectWebSocket(), 1000)
-    }
-
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error)
-      setWsConnected(false)
-    }
-    
-    // Cleanup function untuk menghentikan reconnect loop jika komponen unmount
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close()
-      }
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current)
-      }
-    }
-  }, [tokenIds])
-
-  // Trigger koneksi ulang saat tokenIds berubah
-  useEffect(() => {
-    const cleanup = connectWebSocket()
-    return () => {
-      if (cleanup) cleanup()
-    }
-  }, [connectWebSocket])
-
-  // --- End WebSocket Setup ---
-
-  // Fetch live balance from Polymarket CLOB (needs saved credentials)
+  // ── Live balance fetch ────────────────────────────────────────────────────
   const fetchLiveBalance = useCallback(async () => {
     const storedCreds = getCredentials()
     if (!storedCreds?.api_key) return
@@ -151,11 +61,10 @@ export default function DashboardPage() {
       if (data.configured && typeof data.balance === 'number') {
         setPortfolio(prev => ({ ...prev, total_balance: data.balance, available_balance: data.balance }))
       }
-    } catch {
-      // silently fail — localStorage stats still show
-    }
+    } catch { /* silently fail */ }
   }, [])
 
+  // ── Market fetch ──────────────────────────────────────────────────────────
   const fetchMarkets = useCallback(async () => {
     setLoading(true)
     try {
@@ -169,11 +78,8 @@ export default function DashboardPage() {
     }
   }, [])
 
+  // ── AI Scan ───────────────────────────────────────────────────────────────
   const runAIScan = useCallback(async () => {
-    // Auto-scan interval (user can trigger manual too)
-    if (!autoScanInterval.current) {
-      autoScanInterval.current = setInterval(runAIScan, 10000)
-    }
     if (!markets.length || scanning) return
     setScanning(true)
     setScanProgress(0)
@@ -191,7 +97,6 @@ export default function DashboardPage() {
         const data = await res.json()
         if (data.signal) {
           newSignals.push(data.signal)
-          // Real-time update as each comes in
           setSignals(prev => {
             const filtered = prev.filter(s => s.market_id !== data.signal.market_id)
             return [...filtered, data.signal].sort((a, b) => b.confidence - a.confidence)
@@ -200,18 +105,21 @@ export default function DashboardPage() {
       } catch (e) {
         console.error('[dashboard] analyze error:', e)
       }
-      // Small delay
       await new Promise(r => setTimeout(r, 400))
     }
 
     setScanning(false)
     setLastUpdate(new Date())
 
-    // Auto-execute high confidence signals
+    // ── Auto-execute high confidence signals ────────────────────────────────
     if (settings.auto_trade_enabled) {
-      const highConf = newSignals.filter(s => s.confidence >= settings.min_confidence && s.direction !== 'HOLD')
-      // Grab saved credentials to bridge localStorage → server signing
+      const highConf = newSignals.filter(
+        s => s.confidence >= settings.min_confidence && s.direction !== 'HOLD'
+      )
+
       const storedCreds = getCredentials()
+
+      // FIX: private_key wajib disertakan agar server bisa menandatangani order
       const clobCreds = storedCreds?.api_key
         ? {
             apiKey:        storedCreds.api_key,
@@ -219,6 +127,7 @@ export default function DashboardPage() {
             apiPassphrase: storedCreds.api_passphrase,
             funderAddress: storedCreds.funder_address,
             signatureType: storedCreds.signature_type ?? 0,
+            privateKey:    storedCreds.private_key,          // ← FIX KRITIS
           }
         : undefined
 
@@ -228,21 +137,24 @@ export default function DashboardPage() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              market_id: signal.market_id,
-              question: signal.question,
-              side: signal.recommendedSide,
-              size: settings.min_trade_size,
-              price: signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice,
+              market_id:         signal.market_id,
+              question:          signal.question,
+              side:              signal.recommendedSide,
+              size:              settings.min_trade_size,
+              price:             signal.recommendedSide === 'YES' ? signal.yesPrice : signal.noPrice,
               signal_confidence: signal.confidence,
-              ai_rationale: signal.analyses.map(a => a.rationale).join(' | '),
-              stop_loss_pct: settings.default_stop_loss,
-              take_profit_pct: settings.default_take_profit,
-              credentials: clobCreds,
+              ai_rationale:      signal.analyses.map(a => a.rationale).join(' | '),
+              stop_loss_pct:     settings.default_stop_loss,
+              take_profit_pct:   settings.default_take_profit,
+              credentials:       clobCreds,
             }),
           })
           const result = await res.json()
           if (result.success) {
-            setNotifications(n => [`Auto-traded: ${signal.direction} ${signal.question.slice(0, 40)}... (${signal.confidence}%)`, ...n.slice(0, 4)])
+            setNotifications(n => [
+              `Auto-traded: ${signal.direction} ${signal.question.slice(0, 40)}... (${signal.confidence}%)`,
+              ...n.slice(0, 4),
+            ])
             setPortfolio(calculatePortfolioStats())
           }
         } catch (e) {
@@ -258,19 +170,21 @@ export default function DashboardPage() {
     saveSettings(newSettings)
   }
 
-  // Initial fetch
+  // ── Effects ───────────────────────────────────────────────────────────────
   useEffect(() => {
     fetchMarkets()
     fetchLiveBalance()
   }, [fetchMarkets, fetchLiveBalance])
 
-  // Merge live balance with local P&L stats
   useEffect(() => {
     const local = calculatePortfolioStats()
-    setPortfolio(prev => ({ ...local, total_balance: prev.total_balance, available_balance: prev.available_balance }))
+    setPortfolio(prev => ({
+      ...local,
+      total_balance:     prev.total_balance,
+      available_balance: prev.available_balance,
+    }))
   }, [])
 
-  // Auto-refresh market list every 60 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       fetchMarkets()
@@ -279,12 +193,13 @@ export default function DashboardPage() {
     return () => clearInterval(interval)
   }, [fetchMarkets, fetchLiveBalance])
 
-  // Heartbeat every 25 seconds when auto-trading is ON (required by Polymarket)
+  // ── CLOB Heartbeat (wajib saat auto-trading aktif) ─────────────────────
   useEffect(() => {
     if (heartbeatRef.current) clearInterval(heartbeatRef.current)
     if (!settings.auto_trade_enabled) return
     const storedCreds = getCredentials()
     if (!storedCreds?.api_key) return
+
     const clobCreds = {
       apiKey:        storedCreds.api_key,
       apiSecret:     storedCreds.api_secret,
@@ -292,6 +207,7 @@ export default function DashboardPage() {
       funderAddress: storedCreds.funder_address,
       signatureType: storedCreds.signature_type ?? 0,
     }
+
     heartbeatRef.current = setInterval(async () => {
       try {
         await fetch('/api/trade/heartbeat', {
@@ -301,18 +217,24 @@ export default function DashboardPage() {
         })
       } catch { /* silent */ }
     }, 25_000)
+
     return () => { if (heartbeatRef.current) clearInterval(heartbeatRef.current) }
   }, [settings.auto_trade_enabled])
 
+  // ── Derived state ─────────────────────────────────────────────────────────
   const highConfSignals = signals.filter(s => s.confidence >= 75 && s.direction !== 'HOLD')
-  const buySignals = highConfSignals.filter(s => s.direction === 'BUY')
-  const sellSignals = highConfSignals.filter(s => s.direction === 'SELL')
-  const openTrades = getOpenTrades()
-  const allTrades = getTrades()
+  const buySignals      = highConfSignals.filter(s => s.direction === 'BUY')
+  const sellSignals     = highConfSignals.filter(s => s.direction === 'SELL')
+  const openTrades      = getOpenTrades()
+  const allTrades       = getTrades()
 
   return (
     <div className="flex min-h-screen bg-background">
-      <AppSidebar autoTradeEnabled={settings.auto_trade_enabled} scanning={scanning} />
+      <AppSidebar
+        autoTradeEnabled={settings.auto_trade_enabled}
+        scanning={scanning}
+        connected={wsConnected}
+      />
 
       <div className="flex-1 ml-16 lg:ml-56 min-w-0 flex flex-col">
         <AppHeader
@@ -339,55 +261,27 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Real-time connection status */}
+          {/* WebSocket status */}
           <div className={cn(
             'flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium w-fit',
             wsConnected
               ? 'bg-profit/10 text-profit border border-profit/20'
               : 'bg-secondary text-muted-foreground border border-border'
           )}>
-            {wsConnected
-              ? <Wifi className="w-3.5 h-3.5" />
-              : <WifiOff className="w-3.5 h-3.5" />}
+            {wsConnected ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
             {wsConnected ? 'Real-time prices connected' : 'Connecting to live prices...'}
-            {wsConnected && (
-              <span className="ml-1 opacity-70">{tokenIds.length} tokens</span>
-            )}
+            {wsConnected && <span className="ml-1 opacity-70">{tokenIds.length} tokens</span>}
           </div>
 
           {/* Portfolio stats */}
           <PortfolioStatsBar stats={portfolio} />
 
-          {/* Quick stats row */}
+          {/* Quick stats */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <QuickStat
-              icon={BrainCircuit}
-              label="Signals Found"
-              value={String(signals.length)}
-              sub={`${highConfSignals.length} high confidence`}
-              color="primary"
-            />
-            <QuickStat
-              icon={TrendingUp}
-              label="BUY Signals"
-              value={String(buySignals.length)}
-              sub="above 75%"
-              color="profit"
-            />
-            <QuickStat
-              icon={TrendingDown}
-              label="SELL Signals"
-              value={String(sellSignals.length)}
-              sub="above 75%"
-              color="loss"
-            />
-            <QuickStat
-              icon={Activity}
-              label="Open Positions"
-              value={String(openTrades.length)}
-              sub={`${allTrades.length} total trades`}
-              color="primary"
-            />
+            <QuickStat icon={BrainCircuit} label="Signals Found"    value={String(signals.length)}      sub={`${highConfSignals.length} high confidence`} color="primary" />
+            <QuickStat icon={TrendingUp}   label="BUY Signals"      value={String(buySignals.length)}    sub="above 75%"                                  color="profit"  />
+            <QuickStat icon={TrendingDown} label="SELL Signals"     value={String(sellSignals.length)}   sub="above 75%"                                  color="loss"    />
+            <QuickStat icon={Activity}     label="Open Positions"   value={String(openTrades.length)}    sub={`${allTrades.length} total trades`}          color="primary" />
           </div>
 
           <div className="grid lg:grid-cols-3 gap-4">
@@ -396,9 +290,7 @@ export default function DashboardPage() {
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-foreground">Market Scan</h2>
                 <div className="flex items-center gap-2">
-                  {scanning && (
-                    <span className="text-xs text-primary font-mono">{scanProgress}%</span>
-                  )}
+                  {scanning && <span className="text-xs text-primary font-mono">{scanProgress}%</span>}
                   <button
                     onClick={runAIScan}
                     disabled={scanning || !markets.length}
@@ -410,17 +302,12 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {/* Scan progress bar */}
               {scanning && (
                 <div className="h-1 bg-secondary rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-primary transition-all duration-300 rounded-full"
-                    style={{ width: `${scanProgress}%` }}
-                  />
+                  <div className="h-full bg-primary transition-all duration-300 rounded-full" style={{ width: `${scanProgress}%` }} />
                 </div>
               )}
 
-              {/* Top signals list */}
               <div className="space-y-2">
                 {signals.slice(0, 8).map(signal => (
                   <SignalRow key={signal.market_id} signal={signal} />
@@ -437,10 +324,7 @@ export default function DashboardPage() {
                   </div>
                 )}
                 {signals.length > 8 && (
-                  <Link
-                    href="/signals"
-                    className="flex items-center justify-center gap-1.5 py-2 text-xs text-primary hover:underline"
-                  >
+                  <Link href="/signals" className="flex items-center justify-center gap-1.5 py-2 text-xs text-primary hover:underline">
                     View all {signals.length} signals <ChevronRight className="w-3.5 h-3.5" />
                   </Link>
                 )}
@@ -449,61 +333,48 @@ export default function DashboardPage() {
 
             {/* Right panel */}
             <div className="space-y-3">
-              {/* Auto-trade status */}
               <div className={cn(
                 'p-4 rounded-lg border',
-                settings.auto_trade_enabled
-                  ? 'bg-profit/5 border-profit/20'
-                  : 'bg-secondary border-border'
+                settings.auto_trade_enabled ? 'bg-profit/5 border-profit/20' : 'bg-secondary border-border'
               )}>
                 <div className="flex items-center gap-2 mb-2">
-                  <div className={cn(
-                    'w-2 h-2 rounded-full',
-                    settings.auto_trade_enabled ? 'bg-profit animate-pulse' : 'bg-muted-foreground'
-                  )} />
+                  <div className={cn('w-2 h-2 rounded-full', settings.auto_trade_enabled ? 'bg-profit animate-pulse' : 'bg-muted-foreground')} />
                   <span className="text-sm font-semibold text-foreground">
                     {settings.auto_trade_enabled ? 'Auto Trading Active' : 'Auto Trading Inactive'}
                   </span>
                 </div>
                 <div className="space-y-1.5 text-xs">
                   <ConfigRow label="Min Confidence" value={`${settings.min_confidence}%`} />
-                  <ConfigRow label="Trade Size" value={`$${settings.min_trade_size}–$${settings.max_trade_size}`} />
-                  <ConfigRow label="Stop Loss" value={`${settings.default_stop_loss}%`} />
-                  <ConfigRow label="Take Profit" value={`${settings.default_take_profit}%`} />
-                  <ConfigRow label="Max Positions" value={String(settings.max_open_positions)} />
+                  <ConfigRow label="Trade Size"     value={`$${settings.min_trade_size}–$${settings.max_trade_size}`} />
+                  <ConfigRow label="Stop Loss"      value={`${settings.default_stop_loss}%`} />
+                  <ConfigRow label="Take Profit"    value={`${settings.default_take_profit}%`} />
+                  <ConfigRow label="Max Positions"  value={String(settings.max_open_positions)} />
                 </div>
-                <Link
-                  href="/settings"
-                  className="mt-3 flex items-center justify-center gap-1.5 w-full h-8 border border-border rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-all"
-                >
+                <Link href="/settings" className="mt-3 flex items-center justify-center gap-1.5 w-full h-8 border border-border rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-secondary transition-all">
                   Configure <ChevronRight className="w-3 h-3" />
                 </Link>
               </div>
 
-              {/* Open positions */}
               <div className="bg-card border border-border rounded-lg overflow-hidden">
                 <div className="px-4 py-3 border-b border-border flex items-center justify-between">
                   <span className="text-sm font-semibold text-foreground">Open Positions</span>
                   <Link href="/portfolio" className="text-xs text-primary hover:underline">View all</Link>
                 </div>
                 <div className="divide-y divide-border">
-                  {openTrades.slice(0, 4).map(t => (
-                    <OpenPositionRow key={t.id} trade={t} />
-                  ))}
+                  {openTrades.slice(0, 4).map(t => <OpenPositionRow key={t.id} trade={t} />)}
                   {openTrades.length === 0 && (
                     <p className="px-4 py-4 text-xs text-muted-foreground text-center">No open positions</p>
                   )}
                 </div>
               </div>
 
-              {/* Markets loaded */}
               <div className="bg-card border border-border rounded-lg p-4">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-semibold text-foreground">Markets Loaded</span>
                   <span className="text-lg font-mono font-bold text-primary">{markets.length}</span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Top volume markets from Polymarket. Updates every 2 minutes.
+                  Top volume markets from Polymarket. Updates every minute.
                 </p>
               </div>
             </div>
@@ -522,34 +393,24 @@ function SignalRow({ signal }: { signal: CombinedSignal }) {
     <div className={cn(
       'flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all',
       isHigh
-        ? signal.direction === 'BUY'
-          ? 'bg-profit/5 border-profit/20'
-          : 'bg-loss/5 border-loss/20'
+        ? signal.direction === 'BUY' ? 'bg-profit/5 border-profit/20' : 'bg-loss/5 border-loss/20'
         : 'bg-secondary/30 border-border'
     )}>
       <div className={cn(
         'w-6 h-6 rounded flex items-center justify-center shrink-0',
-        signal.direction === 'BUY' ? 'bg-profit/20' :
-        signal.direction === 'SELL' ? 'bg-loss/20' : 'bg-secondary'
+        signal.direction === 'BUY' ? 'bg-profit/20' : signal.direction === 'SELL' ? 'bg-loss/20' : 'bg-secondary'
       )}>
-        {signal.direction === 'BUY' ? (
-          <TrendingUp className="w-3.5 h-3.5 text-profit" />
-        ) : signal.direction === 'SELL' ? (
-          <TrendingDown className="w-3.5 h-3.5 text-loss" />
-        ) : (
-          <Activity className="w-3.5 h-3.5 text-muted-foreground" />
-        )}
+        {signal.direction === 'BUY'
+          ? <TrendingUp className="w-3.5 h-3.5 text-profit" />
+          : signal.direction === 'SELL'
+            ? <TrendingDown className="w-3.5 h-3.5 text-loss" />
+            : <Activity className="w-3.5 h-3.5 text-muted-foreground" />}
       </div>
       <div className="flex-1 min-w-0">
         <p className="text-xs font-medium text-foreground truncate">{signal.question}</p>
         <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-xs text-muted-foreground font-mono">
-            YES: {(signal.yesPrice * 100).toFixed(0)}¢
-          </span>
-          <span className={cn(
-            'text-xs font-semibold',
-            signal.direction === 'BUY' ? 'text-profit' : 'text-loss'
-          )}>
+          <span className="text-xs text-muted-foreground font-mono">YES: {(signal.yesPrice * 100).toFixed(0)}¢</span>
+          <span className={cn('text-xs font-semibold', signal.direction === 'BUY' ? 'text-profit' : 'text-loss')}>
             → BUY {signal.recommendedSide}
           </span>
         </div>
@@ -557,8 +418,7 @@ function SignalRow({ signal }: { signal: CombinedSignal }) {
       <div className="text-right shrink-0">
         <span className={cn(
           'text-sm font-mono font-bold',
-          signal.confidence >= 80 ? 'text-profit' :
-          signal.confidence >= 65 ? 'text-chart-4' : 'text-muted-foreground'
+          signal.confidence >= 80 ? 'text-profit' : signal.confidence >= 65 ? 'text-chart-4' : 'text-muted-foreground'
         )}>{signal.confidence}%</span>
         <p className="text-xs text-muted-foreground">{signal.analyses.length} AI</p>
       </div>
@@ -570,41 +430,27 @@ function OpenPositionRow({ trade }: { trade: ReturnType<typeof getOpenTrades>[0]
   const pnl = trade.pnl ?? 0
   return (
     <div className="px-4 py-2.5 flex items-center gap-3">
-      <span className={cn(
-        'text-xs font-semibold px-1.5 py-0.5 rounded',
-        trade.side === 'YES' ? 'bg-profit/10 text-profit' : 'bg-loss/10 text-loss'
-      )}>{trade.side}</span>
+      <span className={cn('text-xs font-semibold px-1.5 py-0.5 rounded', trade.side === 'YES' ? 'bg-profit/10 text-profit' : 'bg-loss/10 text-loss')}>
+        {trade.side}
+      </span>
       <p className="flex-1 text-xs text-foreground truncate">{trade.question}</p>
-      <span className={cn(
-        'text-xs font-mono font-semibold',
-        pnl >= 0 ? 'text-profit' : 'text-loss'
-      )}>{pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}</span>
+      <span className={cn('text-xs font-mono font-semibold', pnl >= 0 ? 'text-profit' : 'text-loss')}>
+        {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+      </span>
     </div>
   )
 }
 
-function QuickStat({
-  icon: Icon, label, value, sub, color,
-}: {
-  icon: React.ElementType
-  label: string
-  value: string
-  sub: string
-  color: string
+function QuickStat({ icon: Icon, label, value, sub, color }: {
+  icon: React.ElementType; label: string; value: string; sub: string; color: string
 }) {
   return (
     <div className="bg-card border border-border rounded-lg p-4">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs text-muted-foreground">{label}</span>
-        <Icon className={cn('w-4 h-4',
-          color === 'primary' ? 'text-primary' :
-          color === 'profit' ? 'text-profit' : 'text-loss'
-        )} />
+        <Icon className={cn('w-4 h-4', color === 'primary' ? 'text-primary' : color === 'profit' ? 'text-profit' : 'text-loss')} />
       </div>
-      <p className={cn('text-2xl font-mono font-bold',
-        color === 'primary' ? 'text-foreground' :
-        color === 'profit' ? 'text-profit' : 'text-loss'
-      )}>{value}</p>
+      <p className={cn('text-2xl font-mono font-bold', color === 'primary' ? 'text-foreground' : color === 'profit' ? 'text-profit' : 'text-loss')}>{value}</p>
       <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>
     </div>
   )
